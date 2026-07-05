@@ -81,9 +81,12 @@ if (-not (Test-Path $regPath)) {
 }
 
 # ------------------------------------------------ start chrome with CDP
-Say "Starting Chrome with automation port..."
+Say "Starting Chrome with dynamic automation port..."
+$activePortFile = Join-Path $ProfileDir "DevToolsActivePort"
+if (Test-Path $activePortFile) { Remove-Item $activePortFile -Force -ErrorAction SilentlyContinue }
+
 $chromeArgs = @(
-  "--remote-debugging-port=$Port",
+  "--remote-debugging-port=0",
   "--remote-allow-origins=*",
   "--user-data-dir=`"$ProfileDir`"",
   "--no-first-run",
@@ -95,11 +98,29 @@ if ($env:TM_TEST_EXTRA) { $chromeArgs += ($env:TM_TEST_EXTRA -split ' ') }
 $chromeArgs += "about:blank"
 $proc = Start-Process -FilePath $ChromePath -ArgumentList $chromeArgs -PassThru
 
-# wait for the DevTools endpoint
-$targets = $null
-Say "Waiting for Chrome DevTools on port $Port..." Gray
+# wait for the DevToolsActivePort file to be written by Chrome
+$Port = 0
+Say "Waiting for Chrome to open DevTools port..." Gray
 foreach ($i in 1..30) {
-  Start-Sleep -Milliseconds 700
+  Start-Sleep -Milliseconds 500
+  if (Test-Path $activePortFile) {
+    try {
+      $lines = Get-Content $activePortFile -ErrorAction Stop
+      if ($lines.Count -gt 0 -and [int]::TryParse($lines[0], [ref]$Port)) { break }
+    } catch {}
+  }
+  Write-Host "." -NoNewline -ForegroundColor DarkGray
+}
+Write-Host ""
+if ($Port -eq 0) {
+  Say "Chrome did not write the DevToolsActivePort file. It may have failed to start or attached to a hidden background process." Red
+  throw "CDP port discovery failed"
+}
+
+Say "Connecting to Chrome on port $Port..." Gray
+$targets = $null
+foreach ($i in 1..10) {
+  Start-Sleep -Milliseconds 500
   try {
     $req = [System.Net.WebRequest]::Create("http://127.0.0.1:$Port/json")
     $req.Timeout = 2000
@@ -112,13 +133,10 @@ foreach ($i in 1..30) {
     $res.Close()
     $targets = $json | ConvertFrom-Json
     if ($targets) { break }
-  } catch {
-    Write-Host "." -NoNewline -ForegroundColor DarkGray
-  }
+  } catch {}
 }
-Write-Host ""
 if (-not $targets) {
-  Say "Could not reach Chrome's automation port. Something else may be using port $Port, or Chrome failed to start properly." Red
+  Say "Could not reach Chrome's automation port $Port." Red
   throw "CDP connection failed"
 }
 
