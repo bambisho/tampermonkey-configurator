@@ -55,13 +55,58 @@ $running = Get-Process chrome -ErrorAction SilentlyContinue
 if ($running) {
   Say "Chrome is running. It must be closed to apply settings." Yellow
   $ans = Read-Host "Close Chrome now? (y/n)"
-  if ($ans -match '^[yY]') {
-    Stop-Process -Name chrome -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 2
-  } else {
+  if ($ans -notmatch '^[yY]') {
     Say "Aborted. Close Chrome and run again." Red
     exit 1
   }
+}
+# Kill ALL chrome processes (incl. background ones) and wait until truly gone.
+# A lingering background process makes new launches join the old instance and
+# silently ignore the --remote-debugging-port flag.
+Stop-Process -Name chrome -Force -ErrorAction SilentlyContinue
+foreach ($i in 1..20) {
+  Start-Sleep -Milliseconds 500
+  $left = Get-Process chrome -ErrorAction SilentlyContinue
+  if (-not $left) { break }
+  $left | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+if (Get-Process chrome -ErrorAction SilentlyContinue) {
+  Say "Could not close all Chrome processes. Close Chrome manually and run again." Red
+  exit 1
+}
+Start-Sleep -Seconds 1
+
+# ------------------------------------------------ clear crash-restore state
+# Chrome remembers a crashed session in the profile's Preferences file and shows
+# the 'Restore pages?' popup, which can block automation. Clear it at file level.
+function Clear-CrashState([string]$prefsPath) {
+  if (-not (Test-Path $prefsPath)) { return }
+  try {
+    $raw = [System.IO.File]::ReadAllText($prefsPath)
+    $new = $raw
+    $new = $new -replace '"exit_type"\s*:\s*"[^"]*"', '"exit_type":"Normal"'
+    $new = $new -replace '"exited_cleanly"\s*:\s*false', '"exited_cleanly":true'
+    if ($new -ne $raw) {
+      [System.IO.File]::WriteAllText($prefsPath, $new)
+      Say "  Cleared crash-restore state in $(Split-Path -Leaf (Split-Path $prefsPath))" Gray
+    }
+  } catch {
+    Say "  Warning: could not update $prefsPath : $($_.Exception.Message)" Yellow
+  }
+}
+Say "Clearing Chrome crash-restore state..." Cyan
+Get-ChildItem -Path $ProfileDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+  Clear-CrashState (Join-Path $_.FullName "Preferences")
+}
+Clear-CrashState (Join-Path $ProfileDir "Preferences")
+# Also clear the 'Local State' crash flag if present
+$localState = Join-Path $ProfileDir "Local State"
+if (Test-Path $localState) {
+  try {
+    $raw = [System.IO.File]::ReadAllText($localState)
+    $new = $raw -replace '"exited_cleanly"\s*:\s*false', '"exited_cleanly":true'
+    if ($new -ne $raw) { [System.IO.File]::WriteAllText($localState, $new) }
+  } catch {}
 }
 
 # ------------------------------------------------ install extension via registry
