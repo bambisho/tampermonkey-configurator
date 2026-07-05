@@ -65,6 +65,21 @@ if ($running) {
   }
 }
 
+# ------------------------------------------------ install extension via registry
+Say "Checking Tampermonkey installation..." Cyan
+$regPath = "HKCU:\Software\Google\Chrome\Extensions\$ExtId"
+$updateUrl = "https://clients2.google.com/service/update2/crx"
+if (-not (Test-Path $regPath)) {
+  Say "  Adding registry key to install Tampermonkey..." Gray
+  New-Item -Path $regPath -Force | Out-Null
+  New-ItemProperty -Path $regPath -Name "update_url" -Value $updateUrl -PropertyType String -Force | Out-Null
+} else {
+  $currentUrl = (Get-ItemProperty -Path $regPath -Name "update_url" -ErrorAction SilentlyContinue).update_url
+  if ($currentUrl -ne $updateUrl) {
+    New-ItemProperty -Path $regPath -Name "update_url" -Value $updateUrl -PropertyType String -Force | Out-Null
+  }
+}
+
 # ------------------------------------------------ start chrome with CDP
 Say "Starting Chrome with automation port..."
 $chromeArgs = @(
@@ -163,10 +178,44 @@ $page = $targets | Where-Object { $_.type -eq "page" } | Select-Object -First 1
 $ws = Connect-Tab $page.webSocketDebuggerUrl
 [void](Send-Cdp $ws "Page.enable" $null)
 
+# ============================================================ STEP 0:
+# Wait for extension to be installed and enabled
+Say "Waiting for Tampermonkey to be installed and enabled..." Cyan
+Say "  If Chrome shows a popup asking to 'Enable extension', please click it." Yellow
+Navigate $ws "chrome://extensions/"
+Start-Sleep -Seconds 2
+
+$extReady = $false
+foreach ($try in 1..60) {
+  $r = Eval-Js $ws @"
+(() => {
+  const mgr = document.querySelector('extensions-manager');
+  const list = mgr && mgr.shadowRoot.querySelector('extensions-item-list');
+  if (!list) return false;
+  const items = list.shadowRoot.querySelectorAll('extensions-item');
+  const tm = [...items].find(i => i.id === '$ExtId');
+  if (!tm) return false;
+  const toggle = tm.shadowRoot.querySelector('#enableToggle');
+  return toggle && toggle.checked;
+})()
+"@
+  if ($r -eq $true) {
+    $extReady = $true
+    Say "  Tampermonkey is installed and enabled!" Green
+    break
+  }
+  Start-Sleep -Seconds 1
+}
+
+if (-not $extReady) {
+  Say "  Timed out waiting for Tampermonkey to be enabled. Please run the script again." Red
+  $ok = $false
+  throw "Extension not enabled"
+}
+
 # ============================================================ STEP 1+2:
 # Developer mode + Allow user scripts (chrome://extensions)
 Say "Step 1: Developer mode..." Cyan
-Navigate $ws "chrome://extensions/"
 Start-Sleep -Seconds 1
 $r = Eval-Js $ws @"
 (() => {
