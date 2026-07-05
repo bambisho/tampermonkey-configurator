@@ -1,444 +1,74 @@
 # =====================================================================
-#  Tampermonkey Configurator (zero-install, Chrome, stock Windows)
+#  Tampermonkey Configurator (Enterprise Policy Edition)
 # ---------------------------------------------------------------------
 #  Applies:
-#    1. chrome://extensions  -> Developer mode = ON
-#    2. Tampermonkey details -> Allow user scripts = ON
-#    3. TM settings          -> Config mode = Advanced
-#    4. TM settings          -> Externals / Update Interval = Always
-#    5. TM settings          -> Security / Page Filter Mode = Disabled
-#    6. Presses the section Save button
+#    1. Installs Tampermonkey via Chrome ExtensionInstallForcelist policy
+#    2. Configures Tampermonkey settings via Managed Storage policy
+#    3. Pre-installs two user scripts (Amazon Address Filler, Amazon Platinum Autofill)
 #
-#  Requires nothing but Windows PowerShell 5.1 (built into Windows 10/11)
-#  and Google Chrome. Run via run.cmd or:
-#    powershell -ExecutionPolicy Bypass -File tm-configure.ps1
+#  Requires:
+#    - Run as Administrator (to write to HKLM registry)
+#    - Windows PowerShell 5.1
 #
-#  Optional parameters:
-#    -ChromePath "C:\...\chrome.exe"   (auto-detected if omitted)
-#    -ProfileDir "C:\Users\X\AppData\Local\Google\Chrome\User Data"
-#    -ExtId      "dhdgffkkebhmkfjojejmpbldmpobfkfo"  (TM stable)
+#  Note: Developer mode and "Allow user scripts" must be enabled manually.
 # =====================================================================
 param(
-  [string]$ChromePath = "",
-  [string]$ProfileDir = "",
-  [string]$ExtId = "dhdgffkkebhmkfjojejmpbldmpobfkfo",
-  [int]$Port = 9333
+  [string]$ExtId = "dhdgffkkebhmkfjojejmpbldmpobfkfo"  # TM stable
 )
 
 $ErrorActionPreference = "Stop"
-$ok = $true
 
 function Say($msg, $color = "Gray") { Write-Host $msg -ForegroundColor $color }
 
-# ------------------------------------------------ locate chrome
-if (-not $ChromePath -or $ChromePath -eq "") {
-  $candidates = @(
-    "C:\Program Files\Google\Chrome\Application\chrome.exe",
-    "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
-  )
-  $ChromePath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-}
-# if (-not $ChromePath -or (-not (Test-Path $ChromePath -ErrorAction SilentlyContinue) -and $ChromePath -ne "chromium")) {
-#   Say "Chrome was not found. Pass -ChromePath 'C:\...\chrome.exe'" Red
-#   exit 1
-# }
-if (-not $ProfileDir) { $ProfileDir = "$env:LOCALAPPDATA\Google\Chrome\User Data" }
-
-Say "Chrome  : $ChromePath"
-Say "Profile : $ProfileDir"
-Say "Ext ID  : $ExtId"
-Say ""
-
-# ------------------------------------------------ ensure chrome is closed
-$running = Get-Process chrome -ErrorAction SilentlyContinue
-if ($running) {
-  Say "Chrome is running. It must be closed to apply settings." Yellow
-  $ans = Read-Host "Close Chrome now? (y/n)"
-  if ($ans -notmatch '^[yY]') {
-    Say "Aborted. Close Chrome and run again." Red
+# Check for Administrator privileges
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Say "This script requires Administrator privileges to configure Chrome policies." Red
+    Say "Please right-click PowerShell and select 'Run as Administrator', then run the script again." Yellow
     exit 1
-  }
-}
-# Kill ALL chrome processes (incl. background ones) and wait until truly gone.
-# A lingering background process makes new launches join the old instance and
-# silently ignore the --remote-debugging-port flag.
-Stop-Process -Name chrome -Force -ErrorAction SilentlyContinue
-foreach ($i in 1..20) {
-  Start-Sleep -Milliseconds 500
-  $left = Get-Process chrome -ErrorAction SilentlyContinue
-  if (-not $left) { break }
-  $left | Stop-Process -Force -ErrorAction SilentlyContinue
-}
-if (Get-Process chrome -ErrorAction SilentlyContinue) {
-  Say "Could not close all Chrome processes. Close Chrome manually and run again." Red
-  exit 1
-}
-Start-Sleep -Seconds 1
-
-# ------------------------------------------------ clear crash-restore state
-# Chrome remembers a crashed session in the profile's Preferences file and shows
-# the 'Restore pages?' popup, which can block automation. Clear it at file level.
-function Clear-CrashState([string]$prefsPath) {
-  if (-not (Test-Path $prefsPath)) { return }
-  try {
-    $raw = [System.IO.File]::ReadAllText($prefsPath)
-    $new = $raw
-    $new = $new -replace '"exit_type"\s*:\s*"[^"]*"', '"exit_type":"Normal"'
-    $new = $new -replace '"exited_cleanly"\s*:\s*false', '"exited_cleanly":true'
-    if ($new -ne $raw) {
-      [System.IO.File]::WriteAllText($prefsPath, $new)
-      Say "  Cleared crash-restore state in $(Split-Path -Leaf (Split-Path $prefsPath))" Gray
-    }
-  } catch {
-    Say "  Warning: could not update $prefsPath : $($_.Exception.Message)" Yellow
-  }
-}
-Say "Clearing Chrome crash-restore state..." Cyan
-Get-ChildItem -Path $ProfileDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-  Clear-CrashState (Join-Path $_.FullName "Preferences")
-}
-Clear-CrashState (Join-Path $ProfileDir "Preferences")
-# Also clear the 'Local State' crash flag if present
-$localState = Join-Path $ProfileDir "Local State"
-if (Test-Path $localState) {
-  try {
-    $raw = [System.IO.File]::ReadAllText($localState)
-    $new = $raw -replace '"exited_cleanly"\s*:\s*false', '"exited_cleanly":true'
-    if ($new -ne $raw) { [System.IO.File]::WriteAllText($localState, $new) }
-  } catch {}
 }
 
-# ------------------------------------------------ install extension via registry
-if ($IsWindows) {
-  Say "Checking Tampermonkey installation..." Cyan
-  $regPath = "HKCU:\Software\Google\Chrome\Extensions\$ExtId"
-  $updateUrl = "https://clients2.google.com/service/update2/crx"
-  if (-not (Test-Path $regPath)) {
-    Say "  Adding registry key to install Tampermonkey..." Gray
-    New-Item -Path $regPath -Force | Out-Null
-    New-ItemProperty -Path $regPath -Name "update_url" -Value $updateUrl -PropertyType String -Force | Out-Null
-  } else {
-    $currentUrl = (Get-ItemProperty -Path $regPath -Name "update_url" -ErrorAction SilentlyContinue).update_url
-    if ($currentUrl -ne $updateUrl) {
-      New-ItemProperty -Path $regPath -Name "update_url" -Value $updateUrl -PropertyType String -Force | Out-Null
-    }
-  }
+Say "Configuring Tampermonkey via Chrome Enterprise Policies..." Cyan
+
+# 1. Force-install Tampermonkey
+$forceListPath = "HKLM:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
+if (-not (Test-Path $forceListPath)) {
+    New-Item -Path $forceListPath -Force | Out-Null
 }
+# The value format is "extension_id;update_url"
+$installValue = "$ExtId;https://clients2.google.com/service/update2/crx"
+New-ItemProperty -Path $forceListPath -Name "1" -Value $installValue -PropertyType String -Force | Out-Null
+Say "  -> Set ExtensionInstallForcelist policy to install Tampermonkey." Green
 
-# ------------------------------------------------ start chrome with CDP
-Say "Starting Chrome with dynamic automation port..."
-$activePortFile = Join-Path $ProfileDir "DevToolsActivePort"
-if (Test-Path $activePortFile) { Remove-Item $activePortFile -Force -ErrorAction SilentlyContinue }
+# 2. Configure Managed Storage (JSON Import)
+# The JSON file is hosted on GitHub Pages (or raw.githubusercontent)
+$jsonUrl = "https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/tm-provision.json"
+# This hash must match the exact SHA256 of the hosted JSON file
+$jsonHash = "1:10f5369d7ac6a9b321edef1adc1e9dcb91df60303b23e47ddda77357fba4db57"
 
-$chromeArgs = @(
-  "--remote-debugging-port=0",
-  "--remote-allow-origins=*",
-  "--user-data-dir=`"$ProfileDir`"",
-  "--no-first-run",
-  "--no-default-browser-check",
-  "--disable-features=MediaRouter",
-  "--window-size=1200,900",
-  "--hide-crash-restore-bug",
-  "--disable-session-crashed-bubble",
-  "--disable-infobars"
+# Tampermonkey's official docs write the policy directly under the extension key
+# (no 'policy' segment), while Chromium docs use a 'policy' segment. Set BOTH
+# to be safe across Chrome versions.
+$managedStoragePaths = @(
+    "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId\policy\jsonImport\1",
+    "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId\jsonImport\1"
 )
-if ($env:TM_TEST_EXTRA) { $chromeArgs += ($env:TM_TEST_EXTRA -split ' ') }
-$chromeArgs += "about:blank"
-$proc = Start-Process -FilePath $ChromePath -ArgumentList $chromeArgs -PassThru
-
-# wait for the DevToolsActivePort file to be written by Chrome
-$Port = 0
-Say "Waiting for Chrome to open DevTools port..." Gray
-foreach ($i in 1..30) {
-  Start-Sleep -Milliseconds 500
-  if (Test-Path $activePortFile) {
-    try {
-      $lines = Get-Content $activePortFile -ErrorAction Stop
-      if ($lines.Count -gt 0 -and [int]::TryParse($lines[0], [ref]$Port)) { break }
-    } catch {}
-  }
-  Write-Host "." -NoNewline -ForegroundColor DarkGray
-}
-Write-Host ""
-
-if ($Port -eq 0) {
-  Say "Chrome did not write the DevToolsActivePort file. Falling back to port 9333..." Yellow
-  $Port = 9333
-  Stop-Process -Name chrome -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Seconds 2
-  $chromeArgs = @(
-    "--remote-debugging-port=$Port",
-    "--remote-allow-origins=*",
-    "--user-data-dir=`"$ProfileDir`"",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-features=MediaRouter",
-    "--window-size=1200,900",
-    "--hide-crash-restore-bug",
-    "--disable-session-crashed-bubble",
-    "--disable-infobars"
-  )
-  if ($env:TM_TEST_EXTRA) { $chromeArgs += ($env:TM_TEST_EXTRA -split ' ') }
-  $chromeArgs += "about:blank"
-  $proc = Start-Process -FilePath $ChromePath -ArgumentList $chromeArgs -PassThru
-  Start-Sleep -Seconds 3
-}
-
-Say "Connecting to Chrome on port $Port..." Gray
-$targets = $null
-foreach ($i in 1..15) {
-  Start-Sleep -Milliseconds 500
-  try {
-    $req = [System.Net.WebRequest]::Create("http://localhost:$Port/json")
-    $req.Timeout = 2000
-    $req.Proxy = $null
-    $res = $req.GetResponse()
-    $stream = $res.GetResponseStream()
-    $reader = New-Object System.IO.StreamReader($stream)
-    $json = $reader.ReadToEnd()
-    $reader.Close()
-    $res.Close()
-    $targets = $json | ConvertFrom-Json
-    if ($targets) { break }
-  } catch {}
-}
-if (-not $targets) {
-  Say "Could not reach Chrome's automation port $Port." Red
-  throw "CDP connection failed"
-}
-
-# ------------------------------------------------ minimal CDP client (WebSocket)
-Add-Type -AssemblyName System.Net.WebSockets.Client -ErrorAction SilentlyContinue
-
-$script:msgId = 0
-function Connect-Tab([string]$wsUrl) {
-  $ws = New-Object System.Net.WebSockets.ClientWebSocket
-  $ws.Options.KeepAliveInterval = [TimeSpan]::FromSeconds(30)
-  $ct = [Threading.CancellationToken]::None
-  $ws.ConnectAsync([Uri]$wsUrl, $ct).Wait()
-  return $ws
-}
-function Send-Cdp($ws, [string]$method, $params) {
-  $script:msgId++
-  $payload = @{ id = $script:msgId; method = $method } 
-  if ($params) { $payload.params = $params }
-  $json = $payload | ConvertTo-Json -Depth 10 -Compress
-  $bytes = [Text.Encoding]::UTF8.GetBytes($json)
-  $seg = New-Object ArraySegment[byte] -ArgumentList @(,$bytes)
-  $ct = [Threading.CancellationToken]::None
-  $ws.SendAsync($seg, [Net.WebSockets.WebSocketMessageType]::Text, $true, $ct).Wait()
-  # read until we get the reply with our id
-  $buf = New-Object byte[] 262144
-  $deadline = (Get-Date).AddSeconds(20)
-  while ((Get-Date) -lt $deadline) {
-    $sb = New-Object Text.StringBuilder
-    do {
-      $seg2 = New-Object ArraySegment[byte] -ArgumentList @(,$buf)
-      $res = $ws.ReceiveAsync($seg2, $ct).GetAwaiter().GetResult()
-      [void]$sb.Append([Text.Encoding]::UTF8.GetString($buf, 0, $res.Count))
-    } while (-not $res.EndOfMessage)
-    $obj = $null
-    try { $obj = $sb.ToString() | ConvertFrom-Json } catch { continue }
-    if ($obj.id -eq $script:msgId) { return $obj }
-  }
-  throw "CDP timeout waiting for reply to $method"
-}
-function Eval-Js($ws, [string]$expr) {
-  $r = Send-Cdp $ws "Runtime.evaluate" @{ expression = $expr; returnByValue = $true; awaitPromise = $true }
-  if ($r.result.exceptionDetails) { throw ("JS error: " + $r.result.exceptionDetails.text) }
-  return $r.result.result.value
-}
-function Open-Tab([string]$url) {
-  $enc = [Uri]::EscapeDataString($url)
-  $t = Invoke-RestMethod -Method Put "http://127.0.0.1:$Port/json/new?$enc" -TimeoutSec 5
-  return $t
-}
-function Navigate($ws, [string]$url) {
-  [void](Send-Cdp $ws "Page.navigate" @{ url = $url })
-  Start-Sleep -Seconds 2
-}
-
-# use the first page target
-$page = $targets | Where-Object { $_.type -eq "page" } | Select-Object -First 1
-$ws = Connect-Tab $page.webSocketDebuggerUrl
-[void](Send-Cdp $ws "Page.enable" $null)
-
-# ============================================================ STEP 0:
-# Wait for extension to be installed and enabled
-Say "Waiting for Tampermonkey to be installed and enabled..." Cyan
-Say "  If Chrome shows a popup asking to 'Enable extension', please click it." Yellow
-Navigate $ws "chrome://extensions/"
-Start-Sleep -Seconds 2
-
-$extReady = $false
-foreach ($try in 1..60) {
-  $r = Eval-Js $ws @"
-(() => {
-  const mgr = document.querySelector('extensions-manager');
-  const list = mgr && mgr.shadowRoot.querySelector('extensions-item-list');
-  if (!list) return false;
-  const items = list.shadowRoot.querySelectorAll('extensions-item');
-  const tm = [...items].find(i => i.id === '$ExtId');
-  if (!tm) return false;
-  const toggle = tm.shadowRoot.querySelector('#enableToggle');
-  return toggle && toggle.checked;
-})()
-"@
-  if ($r -eq $true) {
-    $extReady = $true
-    Say "  Tampermonkey is installed and enabled!" Green
-    break
-  }
-  Start-Sleep -Seconds 1
-}
-
-if (-not $extReady) {
-  Say "  Timed out waiting for Tampermonkey to be enabled. Please run the script again." Red
-  $ok = $false
-  throw "Extension not enabled"
-}
-
-# ============================================================ STEP 1+2:
-# Developer mode + Allow user scripts (chrome://extensions)
-Say "Step 1: Developer mode..." Cyan
-Start-Sleep -Seconds 1
-$r = Eval-Js $ws @"
-(() => {
-  const mgr = document.querySelector('extensions-manager');
-  const tb = mgr && mgr.shadowRoot.querySelector('extensions-toolbar');
-  const dev = tb && tb.shadowRoot.querySelector('#devMode');
-  if (!dev) return 'FAIL: toggle not found';
-  if (dev.checked) return 'already on';
-  dev.click();
-  return 'enabled';
-})()
-"@
-if ($r -like 'FAIL*') { $ok = $false; Say "  Developer mode: $r" Red } else { Say "  Developer mode: $r" Green }
-Start-Sleep -Seconds 1
-
-Say "Step 2: Allow user scripts..." Cyan
-Navigate $ws "chrome://extensions/?id=$ExtId"
-Start-Sleep -Seconds 1
-$r = Eval-Js $ws @"
-(() => {
-  const mgr = document.querySelector('extensions-manager');
-  const detail = mgr && mgr.shadowRoot.querySelector('extensions-detail-view');
-  if (!detail) return 'FAIL: Tampermonkey not found in this profile';
-  const row = detail.shadowRoot.querySelector('#allow-user-scripts');
-  if (!row) return 'skipped (toggle not present in this Chrome version; Developer mode covers it)';
-  const crt = row.shadowRoot ? row.shadowRoot.querySelector('cr-toggle') : row.querySelector('cr-toggle');
-  if (!crt) return 'FAIL: toggle control not found';
-  if (crt.checked) return 'already on';
-  crt.click();
-  return 'enabled';
-})()
-"@
-if ($r -like 'FAIL*') { $ok = $false; Say "  Allow user scripts: $r" Red } else { Say "  Allow user scripts: $r" Green }
-Start-Sleep -Seconds 1
-
-# ============================================================ STEP 3-6:
-# Tampermonkey settings page
-Say "Step 3-6: Tampermonkey settings..." Cyan
-Navigate $ws "chrome-extension://$ExtId/options.html#nav=settings"
-Start-Sleep -Seconds 3
-
-$helpers = @"
-  var __dec = (id) => {
-    const m = id.match(/^(?:select|input)_(.+?)(?:_dd|_cb)?`$/);
-    if (!m) return null;
-    try {
-      let b = m[1].replace(/-/g, '+').replace(/_/g, '/');
-      while (b.length % 4) b += '=';
-      return atob(b);
-    } catch (e) { return null; }
-  };
-  var __findSelect = (key) => [...document.querySelectorAll('select')].find(s => {
-    const d = __dec(s.id) || '';
-    return d === key || d.endsWith('_' + key);
-  });
-  var __set = (key, value) => {
-    const sel = __findSelect(key);
-    if (!sel) return 'FAIL: ' + key + ' not found';
-    const opts = [...sel.options].map(o => ({ v: o.value, t: o.textContent.trim() }));
-    let t = opts.find(o => o.v === String(value)) || opts.find(o => o.t.toLowerCase() === String(value).toLowerCase());
-    if (!t) return 'FAIL: value ' + value + ' not in options';
-    if (sel.value === t.v) return key + ': already set (' + t.t + ')';
-    sel.value = t.v;
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-    return key + ': set to ' + t.t;
-  };
-"@
-
-$sanity = Eval-Js $ws "document.querySelectorAll('select').length"
-if ([int]$sanity -lt 2) {
-  Say "  FAIL: Tampermonkey settings page did not load. Is Tampermonkey installed?" Red
-  $ok = $false
-} else {
-  $r = Eval-Js $ws "$helpers __set('configMode', 100)"
-  if ($r -like 'FAIL*') { $ok = $false; Say "  $r" Red } else { Say "  $r" Green }
-  Start-Sleep -Seconds 2
-
-  $r = Eval-Js $ws "$helpers __set('external_update_interval', 'Always')"
-  if ($r -like 'FAIL*') { $ok = $false; Say "  $r" Red } else { Say "  $r" Green }
-  Start-Sleep -Seconds 1
-
-  $r = Eval-Js $ws "$helpers __set('page_filter_mode', 'Disabled')"
-  if ($r -like 'FAIL*') { $ok = $false; Say "  $r" Red } else { Say "  $r" Green }
-  Start-Sleep -Seconds 1
-
-  # press Save buttons (commits Security section changes).
-  # Retry a few times: the button enables asynchronously after the change event.
-  $saved = $false
-  foreach ($try in 1..5) {
-    Start-Sleep -Seconds 1
-    $r = Eval-Js $ws @"
-(() => {
-  let n = 0, pending = 0;
-  document.querySelectorAll('input[type=button], input[type=submit], button').forEach(b => {
-    const label = (b.value || b.textContent || '').trim().toLowerCase();
-    if (label === 'save') {
-      if (!b.disabled) { b.click(); n++; } else { pending++; }
+foreach ($managedStoragePath in $managedStoragePaths) {
+    if (-not (Test-Path $managedStoragePath)) {
+        New-Item -Path $managedStoragePath -Force | Out-Null
     }
-  });
-  return JSON.stringify({ clicked: n, stillDisabled: pending });
-})()
-"@
-    $obj = $r | ConvertFrom-Json
-    if ($obj.clicked -gt 0) { Say "  Save buttons clicked: $($obj.clicked)" Green; $saved = $true; break }
-    if ($obj.stillDisabled -eq 0 -or $try -ge 3) { break }
-    if ($try -eq 1) { Say "  Waiting for Save button to enable..." Gray }
-  }
-  if (-not $saved) { Say "  Save: nothing pending (already saved or no changes needed)" Green }
-  Start-Sleep -Seconds 2
-
-  # ------------------------------------------------ verify (reload page)
-  Say ""
-  Say "Verifying..." Cyan
-  Navigate $ws "chrome-extension://$ExtId/options.html#nav=settings"
-  Start-Sleep -Seconds 3
-  $v = Eval-Js $ws @"
-$helpers
-(() => {
-  const get = (k) => {
-    const s = __findSelect(k);
-    return s ? s.options[s.selectedIndex].textContent.trim() : 'NOT VISIBLE';
-  };
-  return 'configMode=' + get('configMode') +
-    ' | external_update_interval=' + get('external_update_interval') +
-    ' | page_filter_mode=' + get('page_filter_mode');
-})()
-"@
-  Say "  $v" Yellow
-  if ($v -notmatch 'external_update_interval=Always' -or $v -notmatch 'page_filter_mode=Disabled') { $ok = $false }
+    New-ItemProperty -Path $managedStoragePath -Name "url" -Value $jsonUrl -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $managedStoragePath -Name "hash" -Value $jsonHash -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $managedStoragePath -Name "haltOnError" -Value 0 -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -Path $managedStoragePath -Name "installAsSystemScripts" -Value 0 -PropertyType DWord -Force | Out-Null
 }
 
-# ------------------------------------------------ close chrome
-try { $ws.Dispose() } catch {}
-Start-Sleep -Seconds 1
-Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-Stop-Process -Name chrome -Force -ErrorAction SilentlyContinue
+Say "  -> Set Managed Storage policy to import settings and scripts." Green
 
 Say ""
-if ($ok) { Say "Done. All settings applied and verified." Green } else { Say "FINISHED WITH ERRORS - see messages above." Red }
-if (-not $ok) { throw "Configuration failed" }
+Say "Configuration applied successfully!" Green
+Say "Please restart Chrome for the policies to take effect." Yellow
+Say ""
+Say "MANUAL STEPS REQUIRED:" Cyan
+Say "1. Open chrome://extensions and turn ON 'Developer mode' (top right)."
+Say "2. Click 'Details' on Tampermonkey and turn ON 'Allow user scripts'."
