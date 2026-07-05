@@ -78,19 +78,27 @@ while ((Get-Process chrome -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $
     Start-Sleep -Milliseconds 500
 }
 
-$userDataDir = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"
-$profiles = @("Default") + (Get-ChildItem $userDataDir -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -like "Profile *" } | ForEach-Object { $_.Name })
-foreach ($p in $profiles) {
-    foreach ($sub in @("Local Extension Settings", "Sync Extension Settings", "Managed Extension Settings", "IndexedDB")) {
-        $base = Join-Path $userDataDir "$p\$sub"
-        if (-not (Test-Path $base)) { continue }
-        Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like "*$ExtId*" } |
-            ForEach-Object {
-                Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                Say "  -> Cleared $sub in $p" Green
-            }
+# Iterate through all Windows user profiles to ensure we hit the actual user's Chrome data
+# (since running as Administrator might point $env:LOCALAPPDATA to the Admin account)
+$usersDirs = Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue
+foreach ($userDir in $usersDirs) {
+    $userDataDir = Join-Path $userDir.FullName "AppData\Local\Google\Chrome\User Data"
+    if (-not (Test-Path $userDataDir)) { continue }
+
+    $profiles = @("Default") + (Get-ChildItem $userDataDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "Profile *" } | ForEach-Object { $_.Name })
+    
+    foreach ($p in $profiles) {
+        foreach ($sub in @("Local Extension Settings", "Sync Extension Settings", "Managed Extension Settings", "IndexedDB")) {
+            $base = Join-Path $userDataDir "$p\$sub"
+            if (-not (Test-Path $base)) { continue }
+            Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like "*$ExtId*" } |
+                ForEach-Object {
+                    Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                    Say "  -> Cleared $sub in $($userDir.Name)\$p" Green
+                }
+        }
     }
 }
 
