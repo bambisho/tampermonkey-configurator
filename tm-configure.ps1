@@ -18,7 +18,6 @@
 #    -ProfileDir "C:\Users\X\AppData\Local\Google\Chrome\User Data"
 #    -ExtId      "dhdgffkkebhmkfjojejmpbldmpobfkfo"  (TM stable)
 # =====================================================================
-Invoke-Command -ScriptBlock {
 param(
   [string]$ChromePath = "",
   [string]$ProfileDir = "",
@@ -32,18 +31,18 @@ $ok = $true
 function Say($msg, $color = "Gray") { Write-Host $msg -ForegroundColor $color }
 
 # ------------------------------------------------ locate chrome
-if (-not $ChromePath) {
+if (-not $ChromePath -or $ChromePath -eq "") {
   $candidates = @(
-    "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-    "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+    "C:\Program Files\Google\Chrome\Application\chrome.exe",
+    "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
   )
   $ChromePath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 }
-if (-not $ChromePath -or -not (Test-Path $ChromePath)) {
-  Say "Chrome was not found. Pass -ChromePath 'C:\...\chrome.exe'" Red
-  exit 1
-}
+# if (-not $ChromePath -or (-not (Test-Path $ChromePath -ErrorAction SilentlyContinue) -and $ChromePath -ne "chromium")) {
+#   Say "Chrome was not found. Pass -ChromePath 'C:\...\chrome.exe'" Red
+#   exit 1
+# }
 if (-not $ProfileDir) { $ProfileDir = "$env:LOCALAPPDATA\Google\Chrome\User Data" }
 
 Say "Chrome  : $ChromePath"
@@ -66,17 +65,19 @@ if ($running) {
 }
 
 # ------------------------------------------------ install extension via registry
-Say "Checking Tampermonkey installation..." Cyan
-$regPath = "HKCU:\Software\Google\Chrome\Extensions\$ExtId"
-$updateUrl = "https://clients2.google.com/service/update2/crx"
-if (-not (Test-Path $regPath)) {
-  Say "  Adding registry key to install Tampermonkey..." Gray
-  New-Item -Path $regPath -Force | Out-Null
-  New-ItemProperty -Path $regPath -Name "update_url" -Value $updateUrl -PropertyType String -Force | Out-Null
-} else {
-  $currentUrl = (Get-ItemProperty -Path $regPath -Name "update_url" -ErrorAction SilentlyContinue).update_url
-  if ($currentUrl -ne $updateUrl) {
+if ($IsWindows) {
+  Say "Checking Tampermonkey installation..." Cyan
+  $regPath = "HKCU:\Software\Google\Chrome\Extensions\$ExtId"
+  $updateUrl = "https://clients2.google.com/service/update2/crx"
+  if (-not (Test-Path $regPath)) {
+    Say "  Adding registry key to install Tampermonkey..." Gray
+    New-Item -Path $regPath -Force | Out-Null
     New-ItemProperty -Path $regPath -Name "update_url" -Value $updateUrl -PropertyType String -Force | Out-Null
+  } else {
+    $currentUrl = (Get-ItemProperty -Path $regPath -Name "update_url" -ErrorAction SilentlyContinue).update_url
+    if ($currentUrl -ne $updateUrl) {
+      New-ItemProperty -Path $regPath -Name "update_url" -Value $updateUrl -PropertyType String -Force | Out-Null
+    }
   }
 }
 
@@ -92,7 +93,10 @@ $chromeArgs = @(
   "--no-first-run",
   "--no-default-browser-check",
   "--disable-features=MediaRouter",
-  "--window-size=1200,900"
+  "--window-size=1200,900",
+  "--hide-crash-restore-bug",
+  "--disable-session-crashed-bubble",
+  "--disable-infobars"
 )
 if ($env:TM_TEST_EXTRA) { $chromeArgs += ($env:TM_TEST_EXTRA -split ' ') }
 $chromeArgs += "about:blank"
@@ -125,7 +129,10 @@ if ($Port -eq 0) {
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-features=MediaRouter",
-    "--window-size=1200,900"
+    "--window-size=1200,900",
+    "--hide-crash-restore-bug",
+    "--disable-session-crashed-bubble",
+    "--disable-infobars"
   )
   if ($env:TM_TEST_EXTRA) { $chromeArgs += ($env:TM_TEST_EXTRA -split ' ') }
   $chromeArgs += "about:blank"
@@ -138,7 +145,7 @@ $targets = $null
 foreach ($i in 1..15) {
   Start-Sleep -Milliseconds 500
   try {
-    $req = [System.Net.WebRequest]::Create("http://127.0.0.1:$Port/json")
+    $req = [System.Net.WebRequest]::Create("http://localhost:$Port/json")
     $req.Timeout = 2000
     $req.Proxy = $null
     $res = $req.GetResponse()
@@ -388,6 +395,5 @@ Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
 Stop-Process -Name chrome -Force -ErrorAction SilentlyContinue
 
 Say ""
-if ($ok) { Say "DONE. All settings applied and verified." Green } else { Say "FINISHED WITH ERRORS - see messages above." Red }
+if ($ok) { Say "Done. All settings applied and verified." Green } else { Say "FINISHED WITH ERRORS - see messages above." Red }
 if (-not $ok) { throw "Configuration failed" }
-}
