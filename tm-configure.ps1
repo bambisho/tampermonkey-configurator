@@ -67,9 +67,37 @@ foreach ($managedStoragePath in $managedStoragePaths) {
 
 Say "  -> Set Managed Storage policy to import settings and scripts." Green
 
+# 3. Wipe Tampermonkey's local storage so it re-runs provisioning fresh.
+#    (TM caches failed import attempts; a clean storage forces a retry.)
+Say "Closing Chrome to reset Tampermonkey storage..." Cyan
+Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+# wait until all chrome processes are really gone (max 15s)
+$deadline = (Get-Date).AddSeconds(15)
+while ((Get-Process chrome -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {
+    Start-Sleep -Milliseconds 500
+}
+
+$userDataDir = Join-Path $env:LOCALAPPDATA "Google\Chrome\User Data"
+$profiles = @("Default") + (Get-ChildItem $userDataDir -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like "Profile *" } | ForEach-Object { $_.Name })
+foreach ($p in $profiles) {
+    foreach ($sub in @("Local Extension Settings", "Sync Extension Settings", "Managed Extension Settings", "IndexedDB")) {
+        $base = Join-Path $userDataDir "$p\$sub"
+        if (-not (Test-Path $base)) { continue }
+        Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*$ExtId*" } |
+            ForEach-Object {
+                Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                Say "  -> Cleared $sub in $p" Green
+            }
+    }
+}
+
 Say ""
 Say "Configuration applied successfully!" Green
-Say "Please restart Chrome for the policies to take effect." Yellow
+Say "Chrome was closed. Open Chrome now - Tampermonkey will be reinstalled" Yellow
+Say "automatically and import the settings and scripts within a few seconds." Yellow
 Say ""
 Say "MANUAL STEPS REQUIRED:" Cyan
 Say "1. Open chrome://extensions and turn ON 'Developer mode' (top right)."
