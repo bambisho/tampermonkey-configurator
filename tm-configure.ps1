@@ -43,8 +43,10 @@ Say "  -> Set ExtensionInstallForcelist policy to install Tampermonkey." Green
 # 2. Configure Managed Storage (JSON Import)
 # The JSON file is hosted on GitHub Pages (or raw.githubusercontent)
 $jsonUrl = "https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/tm-provision.json"
-# This hash must match the exact SHA256 of the hosted JSON file
-$jsonHash = "1:10f5369d7ac6a9b321edef1adc1e9dcb91df60303b23e47ddda77357fba4db57"
+# This is Tampermonkey's STRUCTURAL hash of the JSON content (not a plain
+# file SHA256). TM recursively hashes sorted keys/values; verified against
+# TM v5.5.0 source and confirmed working in end-to-end tests.
+$jsonHash = "1:8be53b6aa1fa8bad288bf5f8a17c6be6e1fc0793a9f7407b63c6ed2b89a6b6ba"
 
 # Tampermonkey's official docs write the policy directly under the extension key
 # (no 'policy' segment), while Chromium docs use a 'policy' segment. Set BOTH
