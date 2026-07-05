@@ -82,16 +82,29 @@ $proc = Start-Process -FilePath $ChromePath -ArgumentList $chromeArgs -PassThru
 
 # wait for the DevTools endpoint
 $targets = $null
+Say "Waiting for Chrome DevTools on port $Port..." Gray
 foreach ($i in 1..30) {
   Start-Sleep -Milliseconds 700
   try {
-    $targets = Invoke-RestMethod "http://127.0.0.1:$Port/json" -TimeoutSec 2
+    $req = [System.Net.WebRequest]::Create("http://127.0.0.1:$Port/json")
+    $req.Timeout = 2000
+    $req.Proxy = $null
+    $res = $req.GetResponse()
+    $stream = $res.GetResponseStream()
+    $reader = New-Object System.IO.StreamReader($stream)
+    $json = $reader.ReadToEnd()
+    $reader.Close()
+    $res.Close()
+    $targets = $json | ConvertFrom-Json
     if ($targets) { break }
-  } catch {}
+  } catch {
+    Write-Host "." -NoNewline -ForegroundColor DarkGray
+  }
 }
+Write-Host ""
 if (-not $targets) {
-  Say "Could not reach Chrome's automation port. Something else may be using port $Port." Red
-  exit 1
+  Say "Could not reach Chrome's automation port. Something else may be using port $Port, or Chrome failed to start properly." Red
+  throw "CDP connection failed"
 }
 
 # ------------------------------------------------ minimal CDP client (WebSocket)
