@@ -46,7 +46,7 @@ $jsonUrl = "https://raw.githubusercontent.com/bambisho/tampermonkey-configurator
 # This is Tampermonkey's STRUCTURAL hash of the JSON content (not a plain
 # file SHA256). TM recursively hashes sorted keys/values; verified against
 # TM v5.5.0 source and confirmed working in end-to-end tests.
-$jsonHash = "1:8be53b6aa1fa8bad288bf5f8a17c6be6e1fc0793a9f7407b63c6ed2b89a6b6ba"
+$jsonHash = "1:58806415ff27fe2c3efcf015d02d300008ffd1b2210c25ccfc31a7db5e2551de"
 
 # Tampermonkey's official docs write the policy directly under the extension key
 # (no 'policy' segment), while Chromium docs use a 'policy' segment. Set BOTH
