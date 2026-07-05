@@ -112,14 +112,30 @@ foreach ($i in 1..30) {
   Write-Host "." -NoNewline -ForegroundColor DarkGray
 }
 Write-Host ""
+
 if ($Port -eq 0) {
-  Say "Chrome did not write the DevToolsActivePort file. It may have failed to start or attached to a hidden background process." Red
-  throw "CDP port discovery failed"
+  Say "Chrome did not write the DevToolsActivePort file. Falling back to port 9333..." Yellow
+  $Port = 9333
+  Stop-Process -Name chrome -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 2
+  $chromeArgs = @(
+    "--remote-debugging-port=$Port",
+    "--remote-allow-origins=*",
+    "--user-data-dir=`"$ProfileDir`"",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-features=MediaRouter",
+    "--window-size=1200,900"
+  )
+  if ($env:TM_TEST_EXTRA) { $chromeArgs += ($env:TM_TEST_EXTRA -split ' ') }
+  $chromeArgs += "about:blank"
+  $proc = Start-Process -FilePath $ChromePath -ArgumentList $chromeArgs -PassThru
+  Start-Sleep -Seconds 3
 }
 
 Say "Connecting to Chrome on port $Port..." Gray
 $targets = $null
-foreach ($i in 1..10) {
+foreach ($i in 1..15) {
   Start-Sleep -Milliseconds 500
   try {
     $req = [System.Net.WebRequest]::Create("http://127.0.0.1:$Port/json")
