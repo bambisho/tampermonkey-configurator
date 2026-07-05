@@ -104,9 +104,12 @@ foreach ($userDir in $usersDirs) {
 
 Say ""
 Say "Configuration applied successfully!" Green
-Say "Chrome was closed. Open Chrome now - Tampermonkey will be reinstalled" Yellow
-Say "automatically and import the settings and scripts within a few seconds." Yellow
+Say "Chrome was closed. Tampermonkey will be reinstalled automatically" Yellow
+Say "and import the settings and scripts within a few seconds." Yellow
 Say ""
 Say "MANUAL STEPS REQUIRED:" Cyan
 Say "1. Open chrome://extensions and turn ON 'Developer mode' (top right)."
 Say "2. Click 'Details' on Tampermonkey and turn ON 'Allow user scripts'."
+Say ""
+Say "Launching Chrome to Delta Alliance setup page..." Cyan
+Start-Process "chrome.exe" "https://delta.alliance.codes/login"
