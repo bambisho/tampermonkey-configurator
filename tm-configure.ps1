@@ -82,6 +82,37 @@ while ((Get-Process chrome -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $
 # Iterate through all Windows user profiles to ensure we hit the actual user's Chrome data
 # (since running as Administrator might point $env:LOCALAPPDATA to the Admin account)
 $usersDirs = Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue
+
+# 3a. DEEP WIPE: delete the Tampermonkey extension files themselves so Chrome
+#     re-downloads a completely fresh copy from the Web Store. This clears any
+#     corrupted installation state that a storage-only wipe cannot fix.
+Say "Deep wiping Tampermonkey extension files..." Cyan
+foreach ($userDir in $usersDirs) {
+    $userDataDir = Join-Path $userDir.FullName "AppData\Local\Google\Chrome\User Data"
+    if (-not (Test-Path $userDataDir)) { continue }
+
+    $profiles = @("Default") + (Get-ChildItem $userDataDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "Profile *" } | ForEach-Object { $_.Name })
+
+    foreach ($p in $profiles) {
+        # The extension code folder itself
+        $extFolder = Join-Path $userDataDir "$p\Extensions\$ExtId"
+        if (Test-Path $extFolder) {
+            Remove-Item $extFolder -Recurse -Force -ErrorAction SilentlyContinue
+            Say "  -> Removed TM extension files from $($userDir.Name)\$p" Green
+        }
+        # Additional per-extension state folders that can hold stale data
+        foreach ($extra in @("Extension Rules\$ExtId", "Extension Scripts\$ExtId", "Extension State\$ExtId")) {
+            $extraPath = Join-Path $userDataDir "$p\$extra"
+            if (Test-Path $extraPath) {
+                Remove-Item $extraPath -Recurse -Force -ErrorAction SilentlyContinue
+                Say "  -> Cleared $extra in $($userDir.Name)\$p" Green
+            }
+        }
+    }
+}
+
+# 3b. Wipe extension storage areas
 foreach ($userDir in $usersDirs) {
     $userDataDir = Join-Path $userDir.FullName "AppData\Local\Google\Chrome\User Data"
     if (-not (Test-Path $userDataDir)) { continue }
