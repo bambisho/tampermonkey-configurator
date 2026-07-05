@@ -42,7 +42,8 @@ Say "  -> Set ExtensionInstallForcelist policy to install Tampermonkey." Green
 
 # 2. Configure Managed Storage (JSON Import)
 # The JSON file is hosted on GitHub Pages (or raw.githubusercontent)
-$jsonUrl = "https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/tm-provision.json"
+$cacheBuster = Get-Date -UFormat "%s"
+$jsonUrl = "https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/tm-provision.json?t=$cacheBuster"
 # This is Tampermonkey's STRUCTURAL hash of the JSON content (not a plain
 # file SHA256). TM recursively hashes sorted keys/values; verified against
 # TM v5.5.0 source and confirmed working in end-to-end tests.
@@ -111,5 +112,4 @@ Say "MANUAL STEPS REQUIRED:" Cyan
 Say "1. Open chrome://extensions and turn ON 'Developer mode' (top right)."
 Say "2. Click 'Details' on Tampermonkey and turn ON 'Allow user scripts'."
 Say ""
-Say "Launching Chrome to Delta Alliance setup page..." Cyan
-Start-Process "chrome.exe" "https://delta.alliance.codes/login"
+Say "Please open Chrome manually to let the policies take effect." Cyan
