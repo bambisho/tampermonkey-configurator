@@ -1,28 +1,21 @@
 # =====================================================================
-#  Tampermonkey Configurator (v21 - simple 2 steps)
+#  Tampermonkey Configurator (v22 - single run)
 # ---------------------------------------------------------------------
-#  Same command runs BOTH steps automatically (it remembers where it is):
+#  ONE run does everything:
 #
-#    STEP 1: Clean install of Tampermonkey
-#      - Removes any old policies and TM leftovers from all profiles
-#      - Sets force-install policy so Chrome downloads TM fresh
-#      -> Then YOU: open Chrome, wait for TM to appear, enable
-#         Developer mode + Allow user scripts,
-#         and run the SAME command again.
-#
-#    STEP 2: Install the combined user script (Tampermonkey native flow)
-#      - Opens the combined .user.js file in Chrome
-#      - Tampermonkey shows its install page
-#      -> YOU: click "Install" (1 click). Done.
+#    1. Closes Chrome, removes old policies and TM leftovers
+#    2. Sets force-install policy so Chrome downloads TM fresh
+#    3. Opens Chrome and WAITS until Tampermonkey is downloaded
+#    4. Opens the combined user script install page
+#       -> YOU: enable Developer mode + 'Allow user scripts' when asked,
+#          then click "Install" on the script tab. Done.
 #
 #  TM settings (config mode etc.) are NOT touched - set them manually.
 #
 #  Requires: Run as Administrator, Windows PowerShell 5.1
 # =====================================================================
 param(
-  [string]$ExtId = "dhdgffkkebhmkfjojejmpbldmpobfkfo",  # TM stable
-  [ValidateSet("auto","1","2","reset")]
-  [string]$Step = "auto"
+  [string]$ExtId = "dhdgffkkebhmkfjojejmpbldmpobfkfo"  # TM stable
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,10 +35,57 @@ if (-not $isAdmin) {
 # ---------------------------------------------------------------------
 # Shared paths / helpers
 # ---------------------------------------------------------------------
-$stateFile      = "C:\ProgramData\tm-configurator-state.txt"
 $forceListPath  = "HKLM:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
 $repoRaw        = "https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master"
 $scriptUrl      = "$repoRaw/scripts/amazon-suite.user.js"
+
+function Find-Chrome {
+    # 1. Registry App Paths (most reliable)
+    foreach ($rk in @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+    )) {
+        try {
+            $v = (Get-ItemProperty -Path $rk -ErrorAction Stop)."(default)"
+            if ($v -and (Test-Path $v)) { return $v }
+        } catch { }
+    }
+    # 2. Known install locations
+    foreach ($p in @(
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+        "$env:LocalAppData\Google\Chrome\Application\chrome.exe"
+    )) {
+        if ($p -and (Test-Path $p)) { return $p }
+    }
+    # 3. PATH
+    $cmd = Get-Command chrome.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+function Get-ChromeProfiles($userDataDir) {
+    @("Default") + (Get-ChildItem $userDataDir -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "Profile *" } | ForEach-Object { $_.Name })
+}
+
+function Test-TmInstalled {
+    $usersDirs = Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue
+    foreach ($userDir in $usersDirs) {
+        $userDataDir = Join-Path $userDir.FullName "AppData\Local\Google\Chrome\User Data"
+        if (-not (Test-Path $userDataDir)) { continue }
+        foreach ($p in (Get-ChromeProfiles $userDataDir)) {
+            $extFolder = Join-Path $userDataDir "$p\Extensions\$ExtId"
+            if (Test-Path $extFolder) {
+                # Make sure a version folder with a manifest exists (download finished)
+                $manifest = Get-ChildItem $extFolder -Recurse -Filter "manifest.json" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($manifest) { return $true }
+            }
+        }
+    }
+    return $false
+}
 
 function Close-Chrome {
     Say "Closing Chrome..." Cyan
@@ -55,11 +95,6 @@ function Close-Chrome {
     while ((Get-Process chrome -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {
         Start-Sleep -Milliseconds 500
     }
-}
-
-function Get-ChromeProfiles($userDataDir) {
-    @("Default") + (Get-ChildItem $userDataDir -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -like "Profile *" } | ForEach-Object { $_.Name })
 }
 
 function Wipe-TmStorage {
@@ -105,117 +140,79 @@ function Wipe-TmFiles {
     }
 }
 
-# ---------------------------------------------------------------------
-# Determine which step to run
-# ---------------------------------------------------------------------
-if ($Step -eq "reset") {
-    Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
-    Say "State reset. Next run will start at STEP 1." Yellow
-    exit 0
+# =====================================================================
+# SINGLE RUN: everything in one go
+# =====================================================================
+Say "==============================================" Cyan
+Say " Tampermonkey Configurator - Single-Run Setup " Cyan
+Say "==============================================" Cyan
+
+# --- Locate Chrome first (abort early if not found) ---
+$chromeExe = Find-Chrome
+if (-not $chromeExe) {
+    Say "ERROR: Could not find chrome.exe on this system." Red
+    Say "Install Google Chrome first, then run this script again." Yellow
+    exit 1
+}
+Say "Found Chrome: $chromeExe" Green
+
+# --- Phase 1: wipe + force-install policy ---
+Close-Chrome
+
+Say "Removing old provisioning policies..." Cyan
+Remove-Item "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId" -Recurse -Force -ErrorAction SilentlyContinue
+
+Wipe-TmFiles
+Wipe-TmStorage
+
+if (-not (Test-Path $forceListPath)) {
+    New-Item -Path $forceListPath -Force | Out-Null
+}
+$installValue = "$ExtId;https://clients2.google.com/service/update2/crx"
+New-ItemProperty -Path $forceListPath -Name "1" -Value $installValue -PropertyType String -Force | Out-Null
+Say "  -> Set ExtensionInstallForcelist policy to install Tampermonkey." Green
+
+# --- Phase 2: open Chrome and wait for TM to be downloaded ---
+Say ""
+Say "Opening Chrome and waiting for Tampermonkey to install..." Cyan
+Start-Process $chromeExe "chrome://extensions"
+
+$deadline = (Get-Date).AddSeconds(120)
+$tmReady = $false
+while (-not $tmReady -and ((Get-Date) -lt $deadline)) {
+    Start-Sleep -Seconds 3
+    $tmReady = Test-TmInstalled
+    Write-Host "." -NoNewline
+}
+Write-Host ""
+
+if ($tmReady) {
+    Say "  -> Tampermonkey is installed!" Green
+} else {
+    Say "WARNING: Tampermonkey did not appear within 2 minutes." Yellow
+    Say "Check your internet connection. Continuing anyway..." Yellow
 }
 
-if ($Step -eq "auto") {
-    if ((Test-Path $stateFile) -and ((Get-Content $stateFile -ErrorAction SilentlyContinue) -eq "step1-done")) {
-        $Step = "2"
-    } else {
-        $Step = "1"
-    }
-}
+# Give TM a few seconds to finish its first-run initialization
+Start-Sleep -Seconds 5
 
-# =====================================================================
-# STEP 1: Clean install of Tampermonkey (no scripts yet)
-# =====================================================================
-if ($Step -eq "1") {
-    Say "=========================================" Cyan
-    Say " STEP 1 of 2: Clean Tampermonkey install " Cyan
-    Say "=========================================" Cyan
+# --- Phase 3: open the user script install page ---
+$cacheBuster = Get-Date -UFormat "%s"
+Say "Opening the script install page in Chrome..." Cyan
+Start-Process $chromeExe "$scriptUrl`?t=$cacheBuster"
 
-    Close-Chrome
-
-    # Remove any previous provisioning policy (from older versions)
-    Say "Removing old provisioning policies..." Cyan
-    Remove-Item "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId" -Recurse -Force -ErrorAction SilentlyContinue
-
-    # Deep wipe: extension files + all storage
-    Wipe-TmFiles
-    Wipe-TmStorage
-
-    # Force-install policy so Chrome downloads TM fresh from the Web Store
-    if (-not (Test-Path $forceListPath)) {
-        New-Item -Path $forceListPath -Force | Out-Null
-    }
-    $installValue = "$ExtId;https://clients2.google.com/service/update2/crx"
-    New-ItemProperty -Path $forceListPath -Name "1" -Value $installValue -PropertyType String -Force | Out-Null
-    Say "  -> Set ExtensionInstallForcelist policy to install Tampermonkey." Green
-
-    # Remember that step 1 is done
-    Set-Content -Path $stateFile -Value "step1-done" -Force
-
-    Say ""
-    Say "STEP 1 COMPLETE!" Green
-    Say ""
-    Say "NOW DO THIS:" Yellow
-    Say "  1. Open Chrome and wait ~30 seconds until Tampermonkey appears" Yellow
-    Say "     in chrome://extensions (Chrome downloads it automatically)." Yellow
-    Say "  2. While you are there: turn ON 'Developer mode' (top right)," Yellow
-    Say "     open Tampermonkey 'Details' and turn ON 'Allow user scripts'." Yellow
-    Say "  3. Run this SAME command again to do STEP 2:" Yellow
-    Say ""
-    Say "     irm https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/tm-configure.ps1 | iex" Cyan
-    Say ""
-    exit 0
-}
-
-# =====================================================================
-# STEP 2: Install the combined user script via TM's NATIVE install flow
-# =====================================================================
-if ($Step -eq "2") {
-    Say "==================================================" Cyan
-    Say " STEP 2 of 2: Install user script (native flow)   " Cyan
-    Say "==================================================" Cyan
-
-    # Sanity check: is TM actually installed?
-    $tmFound = $false
-    $usersDirs = Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue
-    foreach ($userDir in $usersDirs) {
-        $userDataDir = Join-Path $userDir.FullName "AppData\Local\Google\Chrome\User Data"
-        if (-not (Test-Path $userDataDir)) { continue }
-        foreach ($p in (Get-ChromeProfiles $userDataDir)) {
-            if (Test-Path (Join-Path $userDataDir "$p\Extensions\$ExtId")) { $tmFound = $true }
-        }
-    }
-    if (-not $tmFound) {
-        Say "WARNING: Tampermonkey extension files were not found on disk." Red
-        Say "Did you open Chrome after Step 1 and wait for Tampermonkey to install?" Yellow
-        Say "If not: open Chrome, wait ~30s for Tampermonkey to appear," Yellow
-        Say "then run this command again." Yellow
-        Say ""
-        Say "Continuing anyway..." Cyan
-    }
-
-    # Open the .user.js URL in Chrome. Tampermonkey intercepts the
-    # navigation and shows its native install page - just click Install.
-    $cacheBuster = Get-Date -UFormat "%s"
-    Say "Opening the script install page in Chrome..." Cyan
-    Start-Process "chrome.exe" "$scriptUrl`?t=$cacheBuster"
-
-    # Clear state so a future run starts over at Step 1
-    Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
-
-    Say ""
-    Say "STEP 2 COMPLETE!" Green
-    Say ""
-    Say "NOW DO THIS:" Yellow
-    Say "  1. Chrome just opened a tab showing a Tampermonkey install page." Yellow
-    Say "  2. Click the 'Install' button (1 click). Done!" Yellow
-    Say ""
-    Say "  Check the panels afterwards:" Yellow
-    Say "     - Amazon UK/DE pages -> green dot bottom-right + address button" Yellow
-    Say "     - delta.alliance.codes -> blue dot bottom-left + FILL buttons" Yellow
-    Say ""
-    Say "  If the tab shows raw code instead of an install page, make sure" Yellow
-    Say "  'Allow user scripts' is ON for Tampermonkey in chrome://extensions," Yellow
-    Say "  then re-run this command." Yellow
-    Say ""
-    exit 0
-}
+Say ""
+Say "ALL AUTOMATED STEPS COMPLETE!" Green
+Say ""
+Say "NOW DO THIS (in the Chrome window that just opened):" Yellow
+Say "  1. Go to chrome://extensions (tab is already open):" Yellow
+Say "     - Turn ON 'Developer mode' (top right)" Yellow
+Say "     - Open Tampermonkey 'Details' -> turn ON 'Allow user scripts'" Yellow
+Say "  2. Switch to the script tab and click 'Install'." Yellow
+Say "     (If it shows raw code instead of an install page, do step 1" Yellow
+Say "      first, then reload the tab.)" Yellow
+Say ""
+Say "Check the panels afterwards:" Yellow
+Say "  - Amazon UK/DE pages -> green dot bottom-right + address button" Yellow
+Say "  - delta.alliance.codes -> blue dot bottom-left + FILL buttons" Yellow
+Say ""
