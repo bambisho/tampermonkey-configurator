@@ -1,5 +1,5 @@
 # =====================================================================
-#  Tampermonkey Configurator (Native Install Edition, v16)
+#  Tampermonkey Configurator (Native Install Edition, v17 - single combined script)
 # ---------------------------------------------------------------------
 #  Same command runs BOTH steps automatically (it remembers where it is):
 #
@@ -11,10 +11,10 @@
 #         Developer mode + Allow user scripts, close Chrome,
 #         and run the SAME command again.
 #
-#    STEP 2: Install the user scripts (Tampermonkey native flow)
-#      - Opens both .user.js files in Chrome
-#      - Tampermonkey shows its install page for each
-#      -> YOU: click "Install" on each tab (2 clicks total)
+#    STEP 2: Install the user script (Tampermonkey native flow)
+#      - Opens the combined .user.js file in Chrome
+#      - Tampermonkey shows its install page
+#      -> YOU: click "Install" (1 click total)
 #
 #  Requires: Run as Administrator, Windows PowerShell 5.1
 # =====================================================================
@@ -45,8 +45,7 @@ $stateFile      = "C:\ProgramData\tm-configurator-state.txt"
 $forceListPath  = "HKLM:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
 $repoRaw        = "https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master"
 $scriptUrls     = @(
-    "$repoRaw/scripts/amazon-address-filler.user.js",
-    "$repoRaw/scripts/amazonplatinum-autofill.user.js"
+    "$repoRaw/scripts/amazon-suite.user.js"
 )
 
 function Close-Chrome {
@@ -212,9 +211,8 @@ if ($Step -eq "2") {
     Say "STEP 2 COMPLETE!" Green
     Say ""
     Say "NOW DO THIS:" Yellow
-    Say "  1. Chrome just opened 2 tabs, each showing a Tampermonkey" Yellow
-    Say "     install page." Yellow
-    Say "  2. Click the 'Install' button on BOTH tabs (2 clicks total)." Yellow
+    Say "  1. Chrome just opened a tab showing a Tampermonkey install page." Yellow
+    Say "  2. Click the 'Install' button (1 click)." Yellow
     Say "  3. Done! Check the panels:" Yellow
     Say "     - Amazon UK/DE pages -> green dot bottom-right + address panel" Yellow
     Say "     - delta.alliance.codes -> blue dot bottom-left + autofill panel" Yellow
