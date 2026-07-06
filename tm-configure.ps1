@@ -1,5 +1,5 @@
 # =====================================================================
-#  Tampermonkey Configurator (Native Install Edition, v19 - 3 steps)
+#  Tampermonkey Configurator (Native Install Edition, v20 - 3 steps)
 # ---------------------------------------------------------------------
 #  Same command runs ALL steps automatically (it remembers where it is):
 #
@@ -17,8 +17,9 @@
 #      -> YOU: click "Install" (1 click), then run the SAME command again.
 #
 #    STEP 3: Apply Tampermonkey settings
-#      - Sets a settings-only managed storage policy (no scripts touched)
-#      - Restarts Chrome so TM picks up the new settings
+#      - Automates the TM settings page via Chrome DevTools Protocol
+#        (selects Advanced mode + Always update interval like a human)
+#      - Restarts Chrome normally afterwards
 #      -> YOU: verify settings in the TM dashboard.
 #
 #  Requires: Run as Administrator, Windows PowerShell 5.1
@@ -229,51 +230,145 @@ if ($Step -eq "2") {
 }
 
 # =====================================================================
-# STEP 3: Apply Tampermonkey settings (settings-only policy, no scripts)
+# STEP 3: Apply Tampermonkey settings via Chrome DevTools Protocol.
+# This automates the TM settings page exactly like a human would,
+# which is TM's fully supported path - no policies, no hashes.
 # =====================================================================
 if ($Step -eq "3") {
     Say "==========================================" Cyan
     Say " STEP 3 of 3: Apply Tampermonkey settings " Cyan
     Say "==========================================" Cyan
 
+    $DebugPort = 9333
+
+    # Remove any old managed-storage policy so it cannot interfere
+    Remove-Item "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId" -Recurse -Force -ErrorAction SilentlyContinue
+
     Close-Chrome
 
-    # Settings-only provisioning JSON (does NOT contain scripts, so your
-    # installed scripts are untouched).
-    $cacheBuster = Get-Date -UFormat "%s"
-    $jsonUrl = "$repoRaw/tm-settings.json?t=$cacheBuster"
-    # Tampermonkey's STRUCTURAL hash of tm-settings.json content.
-    $jsonHash = "1:ad0480752ee8b32055ccb59c9530f38e695fa1d2fa3b05b67ebff90473ca36f5"
+    Say "Starting Chrome with remote debugging (port $DebugPort)..." Cyan
+    $optionsUrl = "chrome-extension://$ExtId/options.html#nav=settings"
+    Start-Process "chrome.exe" "--remote-debugging-port=$DebugPort --remote-allow-origins=* `"$optionsUrl`""
+    Start-Sleep -Seconds 6
 
-    $managedStoragePaths = @(
-        "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId\policy\jsonImport\1",
-        "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId\jsonImport\1"
-    )
-    foreach ($msp in $managedStoragePaths) {
-        if (-not (Test-Path $msp)) { New-Item -Path $msp -Force | Out-Null }
-        New-ItemProperty -Path $msp -Name "url" -Value $jsonUrl -PropertyType String -Force | Out-Null
-        New-ItemProperty -Path $msp -Name "hash" -Value $jsonHash -PropertyType String -Force | Out-Null
-        New-ItemProperty -Path $msp -Name "haltOnError" -Value 0 -PropertyType DWord -Force | Out-Null
-        New-ItemProperty -Path $msp -Name "installAsSystemScripts" -Value 0 -PropertyType DWord -Force | Out-Null
+    # Find the options page target via the CDP HTTP endpoint
+    $wsUrl = $null
+    for ($i = 0; $i -lt 15 -and -not $wsUrl; $i++) {
+        try {
+            $targets = Invoke-RestMethod "http://127.0.0.1:$DebugPort/json/list"
+            $t = $targets | Where-Object { $_.url -like "chrome-extension://$ExtId/options.html*" } | Select-Object -First 1
+            if ($t) { $wsUrl = $t.webSocketDebuggerUrl }
+        } catch { }
+        if (-not $wsUrl) { Start-Sleep -Seconds 1 }
     }
-    Say "  -> Set settings-only Managed Storage policy." Green
+    if (-not $wsUrl) {
+        Say "ERROR: Could not find the Tampermonkey options page in Chrome." Red
+        Say "Make sure Tampermonkey is installed (Steps 1+2), then run this again." Yellow
+        exit 1
+    }
+    Say "  -> Found Tampermonkey options page." Green
+
+    # JS that flips the settings on the TM options page
+    $js = @'
+(async () => {
+  const dec = (id) => {
+    const m = id.match(/^(?:select|input)_(.+?)(?:_dd|_cb)?$/);
+    if (!m) return null;
+    try {
+      let b = m[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b.length % 4) b += '=';
+      return atob(b);
+    } catch (e) { return null; }
+  };
+  const setSelect = (key, value) => {
+    const sel = [...document.querySelectorAll('select')].find(s => {
+      const d = dec(s.id) || '';
+      return d.endsWith('_' + key) || d === key;
+    });
+    if (!sel) return 'NOTFOUND:' + key;
+    sel.value = String(value);
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return 'OK:' + key + '=' + sel.value;
+  };
+  const r = [];
+  r.push(setSelect('configMode', 100));
+  await new Promise(res => setTimeout(res, 2000));
+  r.push(setSelect('external_update_interval', 1));
+  await new Promise(res => setTimeout(res, 1500));
+  return r.join(' | ');
+})()
+'@
+
+    function Invoke-CdpEval {
+        param([string]$WsUrl, [string]$Expression)
+        $ws = New-Object System.Net.WebSockets.ClientWebSocket
+        $ct = [System.Threading.CancellationToken]::None
+        $ws.ConnectAsync([Uri]$WsUrl, $ct).Wait()
+        $cmd = @{
+            id = 1
+            method = "Runtime.evaluate"
+            params = @{
+                expression = $Expression
+                awaitPromise = $true
+                returnByValue = $true
+            }
+        } | ConvertTo-Json -Depth 6 -Compress
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($cmd)
+        $seg = New-Object System.ArraySegment[byte] -ArgumentList @(,$bytes)
+        $ws.SendAsync($seg, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $ct).Wait()
+        $buffer = New-Object byte[] 65536
+        $deadline = (Get-Date).AddSeconds(30)
+        $result = $null
+        while (-not $result -and (Get-Date) -lt $deadline) {
+            $sb = New-Object System.Text.StringBuilder
+            do {
+                $rseg = New-Object System.ArraySegment[byte] -ArgumentList @(,$buffer)
+                $task = $ws.ReceiveAsync($rseg, $ct)
+                $task.Wait()
+                $res = $task.Result
+                [void]$sb.Append([System.Text.Encoding]::UTF8.GetString($buffer, 0, $res.Count))
+            } while (-not $res.EndOfMessage)
+            try {
+                $obj = $sb.ToString() | ConvertFrom-Json
+                if ($obj.id -eq 1) { $result = $obj }
+            } catch { }
+        }
+        $ws.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "done", $ct).Wait()
+        return $result
+    }
+
+    Say "Applying Tampermonkey settings..." Cyan
+    $resp = Invoke-CdpEval -WsUrl $wsUrl -Expression $js
+
+    $applied = $false
+    if ($resp -and $resp.result.result.value) {
+        Say "  -> Result: $($resp.result.result.value)" Green
+        if ($resp.result.result.value -like "OK:*") { $applied = $true }
+    } else {
+        Say "WARNING: No confirmation received. Settings may not have applied." Yellow
+    }
+
+    Start-Sleep -Seconds 2
 
     # Clear state so a future run starts over at Step 1
     Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
 
-    # Reopen Chrome so TM picks up the settings policy
-    Start-Process "chrome.exe" "chrome://extensions"
+    # Restart Chrome normally (without debug port) on the settings page
+    Say "Restarting Chrome normally..." Cyan
+    Get-Process chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    Start-Process "chrome.exe" $optionsUrl
 
     Say ""
     Say "STEP 3 COMPLETE!" Green
     Say ""
-    Say "NOW DO THIS:" Yellow
-    Say "  1. Chrome just reopened. Wait ~20 seconds." Yellow
-    Say "  2. Open the Tampermonkey dashboard -> Settings tab." Yellow
-    Say "     Config mode should now be 'Advanced'." Yellow
-    Say "  3. Check the panels:" Yellow
-    Say "     - Amazon UK/DE pages -> green dot bottom-right + address button" Yellow
-    Say "     - delta.alliance.codes -> blue dot bottom-left + FILL buttons" Yellow
+    Say "Chrome reopened on the Tampermonkey settings page so you can verify:" Yellow
+    Say "  - Config mode should be 'Advanced'" Yellow
+    Say "  - Externals: Update Interval should be 'Always'" Yellow
+    Say ""
+    Say "Check the panels:" Yellow
+    Say "  - Amazon UK/DE pages -> green dot bottom-right + address button" Yellow
+    Say "  - delta.alliance.codes -> blue dot bottom-left + FILL buttons" Yellow
     Say ""
     exit 0
 }
