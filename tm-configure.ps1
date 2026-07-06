@@ -1,20 +1,20 @@
 # =====================================================================
-#  Tampermonkey Configurator (Two-Step Enterprise Policy Edition)
+#  Tampermonkey Configurator (Native Install Edition, v16)
 # ---------------------------------------------------------------------
 #  Same command runs BOTH steps automatically (it remembers where it is):
 #
 #    STEP 1: Clean install of Tampermonkey
-#      - Removes old provisioning policy (so TM installs "vanilla")
+#      - Removes old provisioning policy and force-install remnants
 #      - Deep wipes old TM files + storage from all Chrome profiles
 #      - Sets force-install policy so Chrome downloads TM fresh
-#      -> Then YOU: open Chrome, wait for TM to appear, close Chrome,
+#      -> Then YOU: open Chrome, wait for TM to appear, enable
+#         Developer mode + Allow user scripts, close Chrome,
 #         and run the SAME command again.
 #
-#    STEP 2: Apply settings + install user scripts
-#      - Sets the Managed Storage (jsonImport) provisioning policy
-#      - Wipes TM storage once more so it re-runs provisioning fresh
-#      -> Then YOU: open Chrome, enable Developer mode + Allow user
-#         scripts, and check the Tampermonkey dashboard.
+#    STEP 2: Install the user scripts (Tampermonkey native flow)
+#      - Opens both .user.js files in Chrome
+#      - Tampermonkey shows its install page for each
+#      -> YOU: click "Install" on each tab (2 clicks total)
 #
 #  Requires: Run as Administrator, Windows PowerShell 5.1
 # =====================================================================
@@ -43,9 +43,10 @@ if (-not $isAdmin) {
 # ---------------------------------------------------------------------
 $stateFile      = "C:\ProgramData\tm-configurator-state.txt"
 $forceListPath  = "HKLM:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
-$managedStoragePaths = @(
-    "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId\policy\jsonImport\1",
-    "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId\jsonImport\1"
+$repoRaw        = "https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master"
+$scriptUrls     = @(
+    "$repoRaw/scripts/amazon-address-filler.user.js",
+    "$repoRaw/scripts/amazonplatinum-autofill.user.js"
 )
 
 function Close-Chrome {
@@ -124,7 +125,7 @@ if ($Step -eq "auto") {
 }
 
 # =====================================================================
-# STEP 1: Clean install of Tampermonkey (no provisioning yet)
+# STEP 1: Clean install of Tampermonkey (no scripts yet)
 # =====================================================================
 if ($Step -eq "1") {
     Say "=========================================" Cyan
@@ -133,10 +134,9 @@ if ($Step -eq "1") {
 
     Close-Chrome
 
-    # Remove any previous provisioning policy so TM installs completely
-    # vanilla with NO managed storage. This avoids the race condition
-    # where TM boots before the policy JSON can be fetched.
-    Say "Removing old provisioning policy (temporary)..." Cyan
+    # Remove any previous provisioning policy - we now use TM's native
+    # install flow instead of managed-storage jsonImport.
+    Say "Removing old provisioning policy..." Cyan
     Remove-Item "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId" -Recurse -Force -ErrorAction SilentlyContinue
 
     # Deep wipe: extension files + all storage
@@ -162,8 +162,7 @@ if ($Step -eq "1") {
     Say "     in chrome://extensions (Chrome downloads it automatically)." Yellow
     Say "  2. While you are there: turn ON 'Developer mode' (top right)," Yellow
     Say "     open Tampermonkey 'Details' and turn ON 'Allow user scripts'." Yellow
-    Say "  3. CLOSE Chrome completely." Yellow
-    Say "  4. Run this SAME command again to do STEP 2:" Yellow
+    Say "  3. Run this SAME command again to do STEP 2:" Yellow
     Say ""
     Say "     irm https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/tm-configure.ps1 | iex" Cyan
     Say ""
@@ -171,12 +170,12 @@ if ($Step -eq "1") {
 }
 
 # =====================================================================
-# STEP 2: Apply settings + install user scripts via provisioning policy
+# STEP 2: Install user scripts via Tampermonkey's NATIVE install flow
 # =====================================================================
 if ($Step -eq "2") {
-    Say "===============================================" Cyan
-    Say " STEP 2 of 2: Apply settings + install scripts " Cyan
-    Say "===============================================" Cyan
+    Say "================================================" Cyan
+    Say " STEP 2 of 2: Install user scripts (native flow) " Cyan
+    Say "================================================" Cyan
 
     # Sanity check: is TM actually installed?
     $tmFound = $false
@@ -191,35 +190,20 @@ if ($Step -eq "2") {
     if (-not $tmFound) {
         Say "WARNING: Tampermonkey extension files were not found on disk." Red
         Say "Did you open Chrome after Step 1 and wait for Tampermonkey to install?" Yellow
-        Say "If not: open Chrome, wait ~30s for Tampermonkey to appear, close Chrome," Yellow
+        Say "If not: open Chrome, wait ~30s for Tampermonkey to appear," Yellow
         Say "then run this command again." Yellow
         Say ""
-        Say "Continuing anyway (the policy will still be applied)..." Cyan
+        Say "Continuing anyway..." Cyan
     }
 
-    Close-Chrome
-
-    # Configure Managed Storage (jsonImport provisioning)
+    # Open each .user.js URL in Chrome. Tampermonkey intercepts the
+    # navigation and shows its native install page - just click Install.
     $cacheBuster = Get-Date -UFormat "%s"
-    $jsonUrl = "https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/tm-provision.json?t=$cacheBuster"
-    # Tampermonkey's STRUCTURAL hash of the JSON content (not a plain file
-    # SHA256). Verified against TM v5.5.0 source and end-to-end tests.
-    $jsonHash = "1:0a4a95a8c5122945f89942a3b0fb95fb3f38112e33d1f3c88bb0984169b451f6"
-
-    foreach ($managedStoragePath in $managedStoragePaths) {
-        if (-not (Test-Path $managedStoragePath)) {
-            New-Item -Path $managedStoragePath -Force | Out-Null
-        }
-        New-ItemProperty -Path $managedStoragePath -Name "url" -Value $jsonUrl -PropertyType String -Force | Out-Null
-        New-ItemProperty -Path $managedStoragePath -Name "hash" -Value $jsonHash -PropertyType String -Force | Out-Null
-        New-ItemProperty -Path $managedStoragePath -Name "haltOnError" -Value 0 -PropertyType DWord -Force | Out-Null
-        New-ItemProperty -Path $managedStoragePath -Name "installAsSystemScripts" -Value 0 -PropertyType DWord -Force | Out-Null
+    Say "Opening script install pages in Chrome..." Cyan
+    foreach ($u in $scriptUrls) {
+        Start-Process "chrome.exe" "$u`?t=$cacheBuster"
+        Start-Sleep -Seconds 2
     }
-    Say "  -> Set Managed Storage policy to import settings and scripts." Green
-
-    # Wipe TM's storage (but NOT the extension files) so it boots fresh
-    # and runs the provisioning import on next start.
-    Wipe-TmStorage
 
     # Clear state so a future run starts over at Step 1
     Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
@@ -228,11 +212,16 @@ if ($Step -eq "2") {
     Say "STEP 2 COMPLETE!" Green
     Say ""
     Say "NOW DO THIS:" Yellow
-    Say "  1. Open Chrome." Yellow
-    Say "  2. Wait ~30 seconds, then open the Tampermonkey dashboard." Yellow
-    Say "     Both scripts should be installed and settings applied." Yellow
-    Say "  3. If Developer mode / 'Allow user scripts' got reset, turn them" Yellow
-    Say "     back ON in chrome://extensions -> Tampermonkey Details." Yellow
+    Say "  1. Chrome just opened 2 tabs, each showing a Tampermonkey" Yellow
+    Say "     install page." Yellow
+    Say "  2. Click the 'Install' button on BOTH tabs (2 clicks total)." Yellow
+    Say "  3. Done! Check the panels:" Yellow
+    Say "     - Amazon UK/DE pages -> green dot bottom-right + address panel" Yellow
+    Say "     - delta.alliance.codes -> blue dot bottom-left + autofill panel" Yellow
+    Say ""
+    Say "  If a tab shows raw code instead of an install page, make sure" Yellow
+    Say "  'Allow user scripts' is ON for Tampermonkey in chrome://extensions," Yellow
+    Say "  then re-run this command." Yellow
     Say ""
     exit 0
 }
