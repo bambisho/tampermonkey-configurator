@@ -1,14 +1,18 @@
 # =====================================================================
-#  Tampermonkey Configurator (v22 - single run)
+#  Tampermonkey Configurator (v23 - single run)
 # ---------------------------------------------------------------------
 #  ONE run does everything:
 #
 #    1. Closes Chrome, removes old policies and TM leftovers
 #    2. Sets force-install policy so Chrome downloads TM fresh
 #    3. Opens Chrome and WAITS until Tampermonkey is downloaded
-#    4. Opens the combined user script install page
-#       -> YOU: enable Developer mode + 'Allow user scripts' when asked,
-#          then click "Install" on the script tab. Done.
+#    4. Opens these tabs in the running Chrome window (not startup tabs):
+#       - chrome://extensions/?id=<TM>       (toggle 'Allow user scripts')
+#       - TM options.html#nav=settings       (set your settings manually)
+#       - the combined user script install page (click 'Install')
+#       - https://delta.alliance.codes/
+#       -> YOU: enable Developer mode + 'Allow user scripts',
+#          click "Install" on the script tab. Done.
 #
 #  TM settings (config mode etc.) are NOT touched - set them manually.
 #
@@ -172,10 +176,12 @@ $installValue = "$ExtId;https://clients2.google.com/service/update2/crx"
 New-ItemProperty -Path $forceListPath -Name "1" -Value $installValue -PropertyType String -Force | Out-Null
 Say "  -> Set ExtensionInstallForcelist policy to install Tampermonkey." Green
 
-# --- Phase 2: open Chrome and wait for TM to be downloaded ---
+# --- Phase 2: open Chrome (with a debug channel for tab control)
+#     and wait for TM to be downloaded ---
+$DebugPort = 9333
 Say ""
 Say "Opening Chrome and waiting for Tampermonkey to install..." Cyan
-Start-Process $chromeExe "chrome://extensions"
+Start-Process $chromeExe "--remote-debugging-port=$DebugPort --remote-allow-origins=*"
 
 $deadline = (Get-Date).AddSeconds(120)
 $tmReady = $false
@@ -196,23 +202,50 @@ if ($tmReady) {
 # Give TM a few seconds to finish its first-run initialization
 Start-Sleep -Seconds 5
 
-# --- Phase 3: open the user script install page ---
+# --- Phase 3: open the requested tabs in the RUNNING Chrome window ---
+# chrome:// and chrome-extension:// URLs cannot be opened from outside,
+# so we use Chrome's DevTools HTTP endpoint (PUT /json/new) instead.
+function Open-Tab($url) {
+    try {
+        $r = Invoke-RestMethod -Method Put -Uri "http://127.0.0.1:$DebugPort/json/new?$url" -TimeoutSec 10
+        Say "  -> Opened tab: $url" Green
+        return $true
+    } catch {
+        Say "  -> Could not open via debug channel: $url" Yellow
+        return $false
+    }
+}
+
 $cacheBuster = Get-Date -UFormat "%s"
-Say "Opening the script install page in Chrome..." Cyan
-Start-Process $chromeExe "$scriptUrl`?t=$cacheBuster"
+Say "Opening tabs..." Cyan
+
+$okDetails  = Open-Tab "chrome://extensions/?id=$ExtId"
+Start-Sleep -Seconds 1
+$okSettings = Open-Tab "chrome-extension://$ExtId/options.html#nav=settings"
+Start-Sleep -Seconds 1
+$okScript   = Open-Tab "$scriptUrl`?t=$cacheBuster"
+Start-Sleep -Seconds 1
+$okDelta    = Open-Tab "https://delta.alliance.codes/"
+
+# Fallbacks for the normal https tabs if the debug channel failed
+if (-not $okScript) { Start-Process $chromeExe "$scriptUrl`?t=$cacheBuster" }
+if (-not $okDelta)  { Start-Process $chromeExe "https://delta.alliance.codes/" }
 
 Say ""
 Say "ALL AUTOMATED STEPS COMPLETE!" Green
 Say ""
-Say "NOW DO THIS (in the Chrome window that just opened):" Yellow
-Say "  1. Go to chrome://extensions (tab is already open):" Yellow
-Say "     - Turn ON 'Developer mode' (top right)" Yellow
-Say "     - Open Tampermonkey 'Details' -> turn ON 'Allow user scripts'" Yellow
-Say "  2. Switch to the script tab and click 'Install'." Yellow
+Say "NOW DO THIS (in the Chrome window):" Yellow
+Say "  1. On the 'Extensions' tab: turn ON 'Developer mode' (top right)" Yellow
+Say "     and turn ON 'Allow user scripts' for Tampermonkey." Yellow
+Say "  2. On the Tampermonkey settings tab: set your settings manually." Yellow
+Say "  3. On the script tab: click 'Install'." Yellow
 Say "     (If it shows raw code instead of an install page, do step 1" Yellow
 Say "      first, then reload the tab.)" Yellow
 Say ""
 Say "Check the panels afterwards:" Yellow
 Say "  - Amazon UK/DE pages -> green dot bottom-right + address button" Yellow
 Say "  - delta.alliance.codes -> blue dot bottom-left + FILL buttons" Yellow
+Say ""
+Say "NOTE: Chrome is running with a local debug port this session." Gray
+Say "Close and reopen Chrome whenever you like - it is only used to open tabs." Gray
 Say ""
