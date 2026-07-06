@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      8.0
+// @version      9.0
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -101,7 +101,7 @@
 
     // After country change, Amazon rebuilds the entire form.
     // We need to wait for the rebuild to complete before filling.
-    // Strategy: wait 2s for the form to stabilize, then observe for City field specifically.
+    // Strategy: wait 4s for the form to stabilize (Amazon lag), then observe for City field specifically.
     setTimeout(() => {
       // Wait until the City field exists in the DOM (confirms form rebuild is done)
       observeFor(() => {
@@ -141,7 +141,7 @@
           }, 500);
         }, 500);
       });
-    }, 2000);
+    }, 4000);
   }
 
   function handleIrishCounty(county) {

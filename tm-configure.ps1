@@ -1,26 +1,31 @@
 # =====================================================================
-#  Tampermonkey Configurator (Native Install Edition, v17 - single combined script)
+#  Tampermonkey Configurator (Native Install Edition, v19 - 3 steps)
 # ---------------------------------------------------------------------
-#  Same command runs BOTH steps automatically (it remembers where it is):
+#  Same command runs ALL steps automatically (it remembers where it is):
 #
 #    STEP 1: Clean install of Tampermonkey
 #      - Removes old provisioning policy and force-install remnants
 #      - Deep wipes old TM files + storage from all Chrome profiles
 #      - Sets force-install policy so Chrome downloads TM fresh
 #      -> Then YOU: open Chrome, wait for TM to appear, enable
-#         Developer mode + Allow user scripts, close Chrome,
+#         Developer mode + Allow user scripts,
 #         and run the SAME command again.
 #
 #    STEP 2: Install the user script (Tampermonkey native flow)
 #      - Opens the combined .user.js file in Chrome
 #      - Tampermonkey shows its install page
-#      -> YOU: click "Install" (1 click total)
+#      -> YOU: click "Install" (1 click), then run the SAME command again.
+#
+#    STEP 3: Apply Tampermonkey settings
+#      - Sets a settings-only managed storage policy (no scripts touched)
+#      - Restarts Chrome so TM picks up the new settings
+#      -> YOU: verify settings in the TM dashboard.
 #
 #  Requires: Run as Administrator, Windows PowerShell 5.1
 # =====================================================================
 param(
   [string]$ExtId = "dhdgffkkebhmkfjojejmpbldmpobfkfo",  # TM stable
-  [ValidateSet("auto","1","2","reset")]
+  [ValidateSet("auto","1","2","3","reset")]
   [string]$Step = "auto"
 )
 
@@ -116,11 +121,10 @@ if ($Step -eq "reset") {
 }
 
 if ($Step -eq "auto") {
-    if ((Test-Path $stateFile) -and ((Get-Content $stateFile -ErrorAction SilentlyContinue) -eq "step1-done")) {
-        $Step = "2"
-    } else {
-        $Step = "1"
-    }
+    $state = if (Test-Path $stateFile) { Get-Content $stateFile -ErrorAction SilentlyContinue } else { "" }
+    if ($state -eq "step2-done") { $Step = "3" }
+    elseif ($state -eq "step1-done") { $Step = "2" }
+    else { $Step = "1" }
 }
 
 # =====================================================================
@@ -128,7 +132,7 @@ if ($Step -eq "auto") {
 # =====================================================================
 if ($Step -eq "1") {
     Say "=========================================" Cyan
-    Say " STEP 1 of 2: Clean Tampermonkey install " Cyan
+    Say " STEP 1 of 3: Clean Tampermonkey install " Cyan
     Say "=========================================" Cyan
 
     Close-Chrome
@@ -173,7 +177,7 @@ if ($Step -eq "1") {
 # =====================================================================
 if ($Step -eq "2") {
     Say "================================================" Cyan
-    Say " STEP 2 of 2: Install user scripts (native flow) " Cyan
+    Say " STEP 2 of 3: Install user scripts (native flow) " Cyan
     Say "================================================" Cyan
 
     # Sanity check: is TM actually installed?
@@ -204,8 +208,8 @@ if ($Step -eq "2") {
         Start-Sleep -Seconds 2
     }
 
-    # Clear state so a future run starts over at Step 1
-    Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
+    # Remember that step 2 is done
+    Set-Content -Path $stateFile -Value "step2-done" -Force
 
     Say ""
     Say "STEP 2 COMPLETE!" Green
@@ -213,13 +217,63 @@ if ($Step -eq "2") {
     Say "NOW DO THIS:" Yellow
     Say "  1. Chrome just opened a tab showing a Tampermonkey install page." Yellow
     Say "  2. Click the 'Install' button (1 click)." Yellow
-    Say "  3. Done! Check the panels:" Yellow
-    Say "     - Amazon UK/DE pages -> green dot bottom-right + address panel" Yellow
-    Say "     - delta.alliance.codes -> blue dot bottom-left + autofill panel" Yellow
+    Say "  3. Run this SAME command again to do STEP 3 (apply TM settings):" Yellow
     Say ""
-    Say "  If a tab shows raw code instead of an install page, make sure" Yellow
+    Say "     irm https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/tm-configure.ps1 | iex" Cyan
+    Say ""
+    Say "  If the tab shows raw code instead of an install page, make sure" Yellow
     Say "  'Allow user scripts' is ON for Tampermonkey in chrome://extensions," Yellow
     Say "  then re-run this command." Yellow
+    Say ""
+    exit 0
+}
+
+# =====================================================================
+# STEP 3: Apply Tampermonkey settings (settings-only policy, no scripts)
+# =====================================================================
+if ($Step -eq "3") {
+    Say "==========================================" Cyan
+    Say " STEP 3 of 3: Apply Tampermonkey settings " Cyan
+    Say "==========================================" Cyan
+
+    Close-Chrome
+
+    # Settings-only provisioning JSON (does NOT contain scripts, so your
+    # installed scripts are untouched).
+    $cacheBuster = Get-Date -UFormat "%s"
+    $jsonUrl = "$repoRaw/tm-settings.json?t=$cacheBuster"
+    # Tampermonkey's STRUCTURAL hash of tm-settings.json content.
+    $jsonHash = "1:ad0480752ee8b32055ccb59c9530f38e695fa1d2fa3b05b67ebff90473ca36f5"
+
+    $managedStoragePaths = @(
+        "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId\policy\jsonImport\1",
+        "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId\jsonImport\1"
+    )
+    foreach ($msp in $managedStoragePaths) {
+        if (-not (Test-Path $msp)) { New-Item -Path $msp -Force | Out-Null }
+        New-ItemProperty -Path $msp -Name "url" -Value $jsonUrl -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $msp -Name "hash" -Value $jsonHash -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $msp -Name "haltOnError" -Value 0 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $msp -Name "installAsSystemScripts" -Value 0 -PropertyType DWord -Force | Out-Null
+    }
+    Say "  -> Set settings-only Managed Storage policy." Green
+
+    # Clear state so a future run starts over at Step 1
+    Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
+
+    # Reopen Chrome so TM picks up the settings policy
+    Start-Process "chrome.exe" "chrome://extensions"
+
+    Say ""
+    Say "STEP 3 COMPLETE!" Green
+    Say ""
+    Say "NOW DO THIS:" Yellow
+    Say "  1. Chrome just reopened. Wait ~20 seconds." Yellow
+    Say "  2. Open the Tampermonkey dashboard -> Settings tab." Yellow
+    Say "     Config mode should now be 'Advanced'." Yellow
+    Say "  3. Check the panels:" Yellow
+    Say "     - Amazon UK/DE pages -> green dot bottom-right + address button" Yellow
+    Say "     - delta.alliance.codes -> blue dot bottom-left + FILL buttons" Yellow
     Say ""
     exit 0
 }
