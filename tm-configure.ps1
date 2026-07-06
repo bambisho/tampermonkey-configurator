@@ -1,5 +1,5 @@
 # =====================================================================
-#  Tampermonkey Configurator (v23 - single run)
+#  Tampermonkey Configurator (v24 - single run)
 # ---------------------------------------------------------------------
 #  ONE run does everything:
 #
@@ -19,7 +19,8 @@
 #  Requires: Run as Administrator, Windows PowerShell 5.1
 # =====================================================================
 param(
-  [string]$ExtId = "dhdgffkkebhmkfjojejmpbldmpobfkfo"  # TM stable
+  [string]$ExtId    = "dhdgffkkebhmkfjojejmpbldmpobfkfo",  # Tampermonkey stable
+  [string]$UboExtId = "ddkjiahejlhfcafbddmgiahcphecmpfh"   # uBlock Origin Lite
 )
 
 $ErrorActionPreference = "Stop"
@@ -74,13 +75,13 @@ function Get-ChromeProfiles($userDataDir) {
         Where-Object { $_.Name -like "Profile *" } | ForEach-Object { $_.Name })
 }
 
-function Test-TmInstalled {
+function Test-ExtInstalled($extensionId) {
     $usersDirs = Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue
     foreach ($userDir in $usersDirs) {
         $userDataDir = Join-Path $userDir.FullName "AppData\Local\Google\Chrome\User Data"
         if (-not (Test-Path $userDataDir)) { continue }
         foreach ($p in (Get-ChromeProfiles $userDataDir)) {
-            $extFolder = Join-Path $userDataDir "$p\Extensions\$ExtId"
+            $extFolder = Join-Path $userDataDir "$p\Extensions\$extensionId"
             if (Test-Path $extFolder) {
                 # Make sure a version folder with a manifest exists (download finished)
                 $manifest = Get-ChildItem $extFolder -Recurse -Filter "manifest.json" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -90,6 +91,8 @@ function Test-TmInstalled {
     }
     return $false
 }
+
+function Test-TmInstalled { Test-ExtInstalled $ExtId }
 
 function Close-Chrome {
     Say "Closing Chrome..." Cyan
@@ -174,28 +177,35 @@ if (-not (Test-Path $forceListPath)) {
 }
 $installValue = "$ExtId;https://clients2.google.com/service/update2/crx"
 New-ItemProperty -Path $forceListPath -Name "1" -Value $installValue -PropertyType String -Force | Out-Null
-Say "  -> Set ExtensionInstallForcelist policy to install Tampermonkey." Green
+Say "  -> Set force-install policy for Tampermonkey." Green
+
+$uboValue = "$UboExtId;https://clients2.google.com/service/update2/crx"
+New-ItemProperty -Path $forceListPath -Name "2" -Value $uboValue -PropertyType String -Force | Out-Null
+Say "  -> Set force-install policy for uBlock Origin Lite." Green
 
 # --- Phase 2: open Chrome (with a debug channel for tab control)
 #     and wait for TM to be downloaded ---
 $DebugPort = 9333
 Say ""
-Say "Opening Chrome and waiting for Tampermonkey to install..." Cyan
+Say "Opening Chrome and waiting for Tampermonkey + uBlock Origin Lite to install..." Cyan
 Start-Process $chromeExe "--remote-debugging-port=$DebugPort --remote-allow-origins=*"
 
 $deadline = (Get-Date).AddSeconds(120)
 $tmReady = $false
-while (-not $tmReady -and ((Get-Date) -lt $deadline)) {
+$uboReady = $false
+while ((-not $tmReady -or -not $uboReady) -and ((Get-Date) -lt $deadline)) {
     Start-Sleep -Seconds 3
-    $tmReady = Test-TmInstalled
+    if (-not $tmReady)  { $tmReady  = Test-ExtInstalled $ExtId }
+    if (-not $uboReady) { $uboReady = Test-ExtInstalled $UboExtId }
     Write-Host "." -NoNewline
 }
 Write-Host ""
 
-if ($tmReady) {
-    Say "  -> Tampermonkey is installed!" Green
-} else {
-    Say "WARNING: Tampermonkey did not appear within 2 minutes." Yellow
+if ($tmReady)  { Say "  -> Tampermonkey is installed!" Green }
+else           { Say "WARNING: Tampermonkey did not appear within 2 minutes." Yellow }
+if ($uboReady) { Say "  -> uBlock Origin Lite is installed!" Green }
+else           { Say "WARNING: uBlock Origin Lite did not appear within 2 minutes." Yellow }
+if (-not $tmReady -or -not $uboReady) {
     Say "Check your internet connection. Continuing anyway..." Yellow
 }
 

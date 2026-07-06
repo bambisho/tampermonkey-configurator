@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      9.0
+// @version      10.0
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -41,15 +41,20 @@
 
   // ========== UK RETURNS FLOW ==========
   function initUKReturns() {
-    // Wait for "Change address" link to appear
-    observeFor(() => {
+    // Persistent re-arm loop: Amazon uses soft navigation (page content
+    // changes without a full reload), so a one-shot observer dies before
+    // the returns page appears. This loop runs forever (cheap DOM check
+    // every 1.5s) and re-attaches the button whenever a "Change address"
+    // link exists without our button next to it.
+    const attachIfNeeded = () => {
+      if (document.getElementById('ext-ie-address-btn')) return;
+
+      let targetLink = null;
       const allLinks = document.querySelectorAll('a[role="button"]');
       for (const link of allLinks) {
-        if (link.textContent.trim() === 'Change address') return link;
+        if (link.textContent.trim() === 'Change address') { targetLink = link; break; }
       }
-      return null;
-    }, (targetLink) => {
-      if (document.getElementById('ext-ie-address-btn')) return;
+      if (!targetLink) return;
 
       const btn = createButton('ext-ie-address-btn', 'Add Ireland Address');
       btn.addEventListener('click', (e) => {
@@ -60,7 +65,11 @@
       });
 
       targetLink.parentElement.appendChild(btn);
-    });
+      console.log('[AddressFiller] Ireland button attached.');
+    };
+
+    attachIfNeeded();
+    setInterval(attachIfNeeded, 1500);
   }
 
   function startUKFlow() {
@@ -177,12 +186,18 @@
 
   // ========== GERMANY ADD PAGE FLOW ==========
   function initDEAddPage() {
-    // Wait for the form to be ready
-    observeFor(() => {
-      return document.getElementById('address-ui-widgets-form-submit-button');
-    }, () => {
-      injectDEButton();
-    });
+    // Persistent re-arm loop (same reasoning as the UK flow): survive
+    // Amazon soft navigations and late-rendered forms indefinitely.
+    const attachIfNeeded = () => {
+      if (document.getElementById('ext-de-address-btn')) return;
+      if (document.getElementById('address-ui-widgets-form-submit-button')) {
+        injectDEButton();
+        console.log('[AddressFiller] German address button attached.');
+      }
+    };
+
+    attachIfNeeded();
+    setInterval(attachIfNeeded, 1500);
   }
 
   function injectDEButton() {
