@@ -277,15 +277,6 @@ if (-not $tmReady -or -not $uboReady) {
 Start-Sleep -Seconds 5
 
 
-Say "Downloading Tampermonkey backup file..." Cyan
-$backupUrl = "$repoRaw/tampermonkey-backup.txt"
-$backupDest = Join-Path $env:USERPROFILE "Downloads\tampermonkey-backup.txt"
-try {
-    Invoke-WebRequest -Uri $backupUrl -OutFile $backupDest -UseBasicParsing
-    Say "  -> Saved to $backupDest" Green
-} catch {
-    Say "  -> Failed to download backup file" Yellow
-}
 
 # --- Phase 3: open the requested tabs in the RUNNING Chrome window ---
 # chrome:// and chrome-extension:// URLs cannot be opened from outside,
@@ -322,8 +313,10 @@ Say ""
 Say "NOW DO THIS (in the Chrome window):" Yellow
 Say "  1. On the 'Extensions' tab: turn ON 'Developer mode' (top right)" Yellow
 Say "     and turn ON 'Allow user scripts' for Tampermonkey." Yellow
-Say "  2. On the Tampermonkey settings tab: go to 'Utilities', click 'Import'," Yellow
-Say "     and select the 'tampermonkey-backup.txt' file in your Downloads folder." Yellow
+Say "  2. On the Tampermonkey settings tab, change these settings:" Yellow
+Say "     - General -> Config Mode -> Advanced" Yellow
+Say "     - Externals -> Update Interval -> Always" Yellow
+Say "     - Security -> Page Filter Mode -> Disabled -> Save" Yellow
 Say "  3. On the script tab: click 'Install'." Yellow
 Say "     (If it shows raw code instead of an install page, do step 1" Yellow
 Say "      first, then reload the tab.)" Yellow
