@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      11.0
+// @version      11.1
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -397,47 +397,92 @@
       "Hello, it has now been over 40 days since we returned the product, and the refund still hasn't been issued. Please provide a specific date for when we can expect it to be processed.",
       "Hi, could you give me an update on our refund? We returned the item over 40 days ago and are still waiting.",
       "Dear Support Team, I am writing to inquire about the status of our refund. The product was returned more than 40 days ago, yet the refund has not been processed. I would appreciate an update on the expected timeline.",
-      "Hello, this is a follow-up regarding our pending refund. The product was returned over 40 days ago, which exceeds any reasonable processing time. If the refund cannot be issued within the next few business days, please escalate this case or let me know who I can contact directly."
+      "Hello, this is a follow-up regarding our pending refund. The product was returned over 40 days ago, which exceeds any reasonable processing time. If the refund cannot be issued within the next few business days, please escalate this case or let me know who I can contact directly.",
+      "Hi there, I'm reaching out about a refund that's been pending for over 40 days now. The item was returned a while ago and I still haven't seen the money back. Can you please look into this?",
+      "Hello, I returned my order more than 40 days ago and the refund has not appeared in my account. Could you please check what's causing the delay?",
+      "Hi, I've been waiting over 40 days for my refund after returning the product. This is well beyond the normal timeframe. Please advise when I can expect the payment.",
+      "Hello, just following up on a return I made over 40 days ago. The refund hasn't come through yet. Could you check the status and let me know what's happening?",
+      "Hi, I need help with a refund that's significantly overdue. I returned the item more than 40 days ago and haven't received any payment. Can someone look into this urgently?"
     ];
+
+    // React-compatible way to set input value and trigger send
+    function setNativeValue(element, value) {
+      const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+        || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+      if (valueSetter) {
+        valueSetter.call(element, value);
+      } else {
+        element.value = value;
+      }
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function clickSend() {
+      // Try multiple selectors for the send button
+      const sendBtn = document.querySelector('button[aria-label="Send message"]')
+        || document.querySelector('button[title="Send"]')
+        || document.querySelector('button[data-testid="send-message-button"]')
+        || document.querySelector('.send-message-button')
+        || [...document.querySelectorAll('button')].find(b => b.querySelector('svg') && b.closest('[class*="chat"], [class*="message"]'));
+      if (sendBtn) {
+        sendBtn.click();
+        return true;
+      }
+      // Fallback: simulate Enter key on the input
+      const input = document.querySelector('textarea') || document.querySelector('input[type="text"]');
+      if (input) {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+        return true;
+      }
+      return false;
+    }
     
     const attachIfNeeded = () => {
       if (document.getElementById('ext-chat-replies-container')) return;
       
       // Find the chat input area
-      const chatInputContainer = document.querySelector('textarea')?.closest('div') || document.querySelector('input[type="text"]')?.closest('div');
+      const chatInput = document.querySelector('textarea') || document.querySelector('input[type="text"][placeholder*="message" i]') || document.querySelector('input[type="text"]');
+      if (!chatInput) return;
+      const chatInputContainer = chatInput.closest('div');
       if (!chatInputContainer) return;
       
       const container = document.createElement('div');
       container.id = 'ext-chat-replies-container';
-      container.style.cssText = 'display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; padding: 0 10px;';
+      container.style.cssText = 'display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; padding: 0 10px;';
       
-      QUICK_REPLIES.forEach((reply, index) => {
+      QUICK_REPLIES.forEach((reply) => {
         const btn = document.createElement('button');
-        btn.textContent = `Reply ${index + 1}`;
+        // Show first ~30 chars as label
+        btn.textContent = reply.substring(0, 30) + '...';
         btn.title = reply;
         btn.style.cssText = `
           padding: 6px 12px;
-          font-size: 12px;
+          font-size: 11px;
           background: #f0f2f5;
           color: #1c1e21;
           border: 1px solid #ccd0d5;
           border-radius: 16px;
           cursor: pointer;
           white-space: nowrap;
+          max-width: 200px;
+          overflow: hidden;
+          text-overflow: ellipsis;
         `;
         btn.addEventListener('mouseenter', () => { btn.style.background = '#e4e6eb'; });
         btn.addEventListener('mouseleave', () => { btn.style.background = '#f0f2f5'; });
         
         btn.addEventListener('click', (e) => {
           e.preventDefault();
+          e.stopPropagation();
           const input = document.querySelector('textarea') || document.querySelector('input[type="text"]');
           if (input) {
-            clearAndSet(input.id || input.name, reply);
-            // Try to find and click the send button
-            setTimeout(() => {
-              const sendBtn = document.querySelector('button[aria-label="Send message"], button[title="Send"]');
-              if (sendBtn) sendBtn.click();
-            }, 100);
+            input.focus();
+            setNativeValue(input, reply);
+            // Give React a moment to register the value, then send
+            setTimeout(() => { clickSend(); }, 300);
           }
         });
         
@@ -445,7 +490,7 @@
       });
       
       chatInputContainer.parentElement.insertBefore(container, chatInputContainer);
-      console.log('[AddressFiller] Chat quick replies attached.');
+      console.log('[AmazonSuite] Chat quick replies attached.');
     };
 
     attachIfNeeded();
