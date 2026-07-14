@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      11.4
+// @version      11.5
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -456,6 +456,94 @@
       "Hi, just wanted to follow up on my return from over {DAYS} days ago. Still no refund on my end. Any updates?"
     ];
 
+    // "Check other orders" replies (40 variations)
+    const CHECK_ORDERS_REPLIES = [
+      "Can you please check these orders as well?",
+      "We just discovered we have some other problematic orders, can you please check?",
+      "Could you also look into a few other orders we're having issues with?",
+      "I have a couple of other problematic orders. Can you check them for me?",
+      "Would you mind checking some other orders that are also having issues?",
+      "We found a few more orders with problems. Could you take a look at them too?",
+      "There are a few additional orders I need help with. Can you check them?",
+      "Can you also review these other orders we just noticed have issues?",
+      "I'd appreciate it if you could also check a few other problematic orders we found.",
+      "We have some more orders that need checking. Could you help with those as well?",
+      "Could you please check these additional orders for us?",
+      "We've identified a few more orders with issues. Can you review them?",
+      "Can you take a look at these other orders as well?",
+      "I have some other orders that need your attention. Could you check them?",
+      "Would it be possible to check a few more problematic orders?",
+      "We just noticed some other orders have problems too. Can you help?",
+      "Please also check these other orders we're having trouble with.",
+      "Can you assist with a few more orders we just found issues with?",
+      "I need you to look at some additional orders that are problematic.",
+      "Could you also verify these other orders for us?",
+      "We have a few more orders that require checking. Can you assist?",
+      "Please take a look at these other orders we're having problems with.",
+      "Can you also check on these additional problematic orders?",
+      "I'd like you to review a few more orders that have issues, please.",
+      "Could you help us check these other orders as well?",
+      "We found some additional orders with problems. Can you check them?",
+      "Please review these other orders we just discovered have issues.",
+      "Can you also look at these extra orders we're having trouble with?",
+      "I have a few more orders that need to be checked. Can you help?",
+      "Would you be able to check these other problematic orders too?",
+      "We noticed a few more orders with issues. Could you verify them?",
+      "Can you please also check these other orders for us?",
+      "I need some help checking these additional problematic orders.",
+      "Could you take a moment to review these other orders as well?",
+      "We have some extra orders that need checking. Can you assist?",
+      "Please also look into these other orders we found issues with.",
+      "Can you check these additional orders that are having problems?",
+      "I'd appreciate your help checking a few more orders as well.",
+      "Could you also verify these other problematic orders we found?",
+      "We have a couple more orders to check. Can you look at them?"
+    ];
+
+    // "Incident report sent" replies (40 variations)
+    const INCIDENT_REPORT_REPLIES = [
+      "Hello! We have sent incident report about this order, can you please check?",
+      "Hi, we just submitted the incident report for this order. Could you take a look?",
+      "Hello, the incident report for this order has been sent. Can you check it?",
+      "Hi there, we've forwarded the incident report regarding this order. Please review it.",
+      "Hello! Can you please check the incident report we just sent for this order?",
+      "Hi, we have provided the incident report for this order. Could you verify it?",
+      "Hello, I've sent over the incident report for this specific order. Can you check?",
+      "Hi! We submitted the required incident report for this order. Please take a look.",
+      "Hello, could you please review the incident report we sent for this order?",
+      "Hi, the incident report for this order is submitted. Can you please check on it?",
+      "Hello! We've completed and sent the incident report for this order. Could you check?",
+      "Hi, just letting you know we sent the incident report for this order. Please review.",
+      "Hello, we have emailed the incident report for this order. Can you check it for us?",
+      "Hi! Please check the incident report we just provided for this order.",
+      "Hello, the incident report regarding this order has been submitted. Could you check?",
+      "Hi, we sent in the incident report for this order. Can you please take a look?",
+      "Hello! Could you verify the incident report we sent over for this order?",
+      "Hi, we've filed the incident report for this order. Please check it when you can.",
+      "Hello, I just sent the incident report for this order. Could you please review it?",
+      "Hi! We have uploaded the incident report for this order. Can you check?",
+      "Hello, please take a look at the incident report we submitted for this order.",
+      "Hi, we've sent the requested incident report for this order. Could you check it?",
+      "Hello! The incident report for this order is sent. Please let me know if you can check it.",
+      "Hi, can you please review the incident report we just filed for this order?",
+      "Hello, we have forwarded the incident report for this order. Could you please check?",
+      "Hi! The incident report for this order has been provided. Can you take a look?",
+      "Hello, we just sent over the incident report for this order. Please check it.",
+      "Hi, could you please verify the incident report we submitted for this order?",
+      "Hello! We have filed the incident report regarding this order. Can you check?",
+      "Hi, please review the incident report we just sent for this order.",
+      "Hello, the incident report for this order is now submitted. Could you check it?",
+      "Hi! We've provided the incident report for this order. Please take a look.",
+      "Hello, can you check the incident report we forwarded for this order?",
+      "Hi, we sent the incident report for this order as requested. Could you review it?",
+      "Hello! Please verify the incident report we just submitted for this order.",
+      "Hi, the incident report regarding this order has been sent. Can you check?",
+      "Hello, we have uploaded the incident report for this order. Please review it.",
+      "Hi! Could you please check the incident report we filed for this order?",
+      "Hello, we just provided the incident report for this order. Can you take a look?",
+      "Hi, please check the incident report we have sent over for this order."
+    ];
+
     // Replace {DAYS} with a random number between 35-40
     function randomizeDays(text) {
       const days = Math.floor(Math.random() * 6) + 35; // 35-40
@@ -509,10 +597,12 @@
       const chatInputContainer = chatInput.closest('div');
       if (!chatInputContainer) return;
 
-      // First 3 are always fixed short replies, then 5 random long (with randomized days 35-40)
+      // First 3 are always fixed short replies, then 1 from each of the 3 long pools
       const selectedShort = ["OK", "Got it", "Yes"];
-      const selectedLong = shuffle(LONG_REPLY_TEMPLATES).slice(0, 5).map(randomizeDays);
-      const displayed = [...selectedShort, ...selectedLong];
+      const selectedRefund = shuffle(LONG_REPLY_TEMPLATES).slice(0, 1).map(randomizeDays);
+      const selectedCheckOrders = shuffle(CHECK_ORDERS_REPLIES).slice(0, 1);
+      const selectedIncidentReport = shuffle(INCIDENT_REPORT_REPLIES).slice(0, 1);
+      const displayed = [...selectedShort, ...selectedRefund, ...selectedCheckOrders, ...selectedIncidentReport];
 
       const container = document.createElement('div');
       container.id = 'ext-chat-replies-container';
@@ -554,7 +644,7 @@
       chatInputContainer.parentElement.insertBefore(container, chatInputContainer);
       // Scroll the chat area so input remains visible
       setTimeout(() => { chatInput.scrollIntoView({ block: 'nearest' }); }, 100);
-      console.log('[AmazonSuite] Chat quick replies attached (3 fixed short + 5 long).');
+      console.log('[AmazonSuite] Chat quick replies attached (3 fixed short + 3 long categories).');
     };
 
     attachIfNeeded();
