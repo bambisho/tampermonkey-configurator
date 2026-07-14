@@ -5,7 +5,6 @@
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
-// @match        https://fraud.cat/*
 // @match        https://delta.alliance.codes/*
 // @run-at       document-idle
 // @grant        none
@@ -42,11 +41,6 @@
     initChatQuickReplies(); // New chat quick replies flow
   } else if (isDE) {
     initDEAddPage();
-  }
-  
-  // 80% Zoom for specific sites
-  if (host.includes('fraud.cat') || host.includes('amazon.co.uk')) {
-    document.body.style.zoom = "80%";
   }
 
   // ========== UK RETURNS FLOW ==========
