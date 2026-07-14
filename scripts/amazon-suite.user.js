@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      11.8
+// @version      11.9
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -606,16 +606,7 @@
 
       const container = document.createElement('div');
       container.id = 'ext-chat-replies-container';
-      container.style.cssText = 'position: fixed; left: 0; right: 0; bottom: 0; z-index: 999999; display: flex; gap: 6px; padding: 5px 10px; overflow-x: auto; white-space: nowrap; background: rgba(255,255,255,0.97); border-top: 1px solid #e0e0e0; box-shadow: 0 -2px 6px rgba(0,0,0,0.08);';
-
-      // Keep the overlay pinned just above the chat input box
-      const positionOverlay = () => {
-        const input = document.querySelector('textarea') || document.querySelector('input[type="text"]');
-        if (!input) return;
-        const rect = input.closest('div') ? input.closest('div').getBoundingClientRect() : input.getBoundingClientRect();
-        const fromBottom = Math.max(0, window.innerHeight - rect.top);
-        container.style.bottom = fromBottom + 'px';
-      };
+      container.style.cssText = 'display: flex; gap: 6px; padding: 4px 10px; overflow-x: auto; white-space: nowrap; max-width: 100%; box-sizing: border-box; flex-shrink: 0;';
 
       displayed.forEach((reply) => {
         const btn = document.createElement('button');
@@ -649,12 +640,9 @@
         container.appendChild(btn);
       });
 
-      // Attach as fixed overlay on body - never affects the chat page layout
-      document.body.appendChild(container);
-      positionOverlay();
-      window.addEventListener('resize', positionOverlay);
-      setInterval(positionOverlay, 1000);
-      console.log('[AmazonSuite] Chat quick replies attached as fixed overlay (3 fixed short + 3 long categories).');
+      // Insert directly above the chat input container (same approach as v11.2 which rendered correctly)
+      chatInputContainer.parentElement.insertBefore(container, chatInputContainer);
+      console.log('[AmazonSuite] Chat quick replies attached (3 fixed short + 3 long categories).');
     };
 
     attachIfNeeded();
