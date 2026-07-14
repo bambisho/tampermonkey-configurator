@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      11.6
+// @version      11.7
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -640,11 +640,9 @@
         container.appendChild(btn);
       });
 
-      // Insert ABOVE the input but ensure input stays visible
-      chatInputContainer.parentElement.insertBefore(container, chatInputContainer);
-      // Scroll the chat area so input remains visible
-      setTimeout(() => { chatInput.scrollIntoView({ block: 'nearest' }); }, 100);
-      console.log('[AmazonSuite] Chat quick replies attached (3 fixed short + 3 long categories).');
+      // Insert BELOW the input container so it never pushes the input or chat out of view
+      chatInputContainer.parentElement.insertBefore(container, chatInputContainer.nextSibling);
+      console.log('[AmazonSuite] Chat quick replies attached below input (3 fixed short + 3 long categories).');
     };
 
     attachIfNeeded();
