@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      11.2
+// @version      11.3
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -412,48 +412,55 @@
     ];
 
     // Long refund follow-up replies (show 5 random from these)
-    const LONG_REPLIES = [
-      "Hello, I'd like to check on the status of my refund. The product was returned more than 40 days ago, and I haven't received the payment yet. Could you let me know when it will be processed?",
-      "Hello, it has now been over 40 days since we returned the product, and the refund still hasn't been issued. Please provide a specific date for when we can expect it to be processed.",
-      "Hi, could you give me an update on our refund? We returned the item over 40 days ago and are still waiting.",
-      "Dear Support Team, I am writing to inquire about the status of our refund. The product was returned more than 40 days ago, yet the refund has not been processed. I would appreciate an update on the expected timeline.",
-      "Hello, this is a follow-up regarding our pending refund. The product was returned over 40 days ago, which exceeds any reasonable processing time. If the refund cannot be issued within the next few business days, please escalate this case or let me know who I can contact directly.",
-      "Hi there, I'm reaching out about a refund that's been pending for over 40 days now. The item was returned a while ago and I still haven't seen the money back. Can you please look into this?",
-      "Hello, I returned my order more than 40 days ago and the refund has not appeared in my account. Could you please check what's causing the delay?",
-      "Hi, I've been waiting over 40 days for my refund after returning the product. This is well beyond the normal timeframe. Please advise when I can expect the payment.",
-      "Hello, just following up on a return I made over 40 days ago. The refund hasn't come through yet. Could you check the status and let me know what's happening?",
-      "Hi, I need help with a refund that's significantly overdue. I returned the item more than 40 days ago and haven't received any payment. Can someone look into this urgently?",
-      "Hello, I'm contacting you because my refund is now 40+ days overdue. The item was sent back weeks ago. What's the holdup?",
-      "Hi, quick question — where is my refund? It's been over 40 days since the return was completed.",
-      "Hello, I'd appreciate some clarity on my pending refund. It's been well over 40 days and I haven't received anything back yet.",
-      "Hi, I'm still waiting on a refund for an item I returned more than 40 days ago. Can you confirm when this will be processed?",
-      "Hello, could you please prioritize my refund? The return was completed over 40 days ago and I've heard nothing since.",
-      "Hi, I returned the product over 40 days ago as instructed, but the refund hasn't shown up. Is there an issue with my case?",
-      "Hello, I've been patient but it's now been 40+ days without receiving my refund. Could you please investigate this?",
-      "Hi, my refund has been pending for over 40 days. I'd like to know if there's a problem or if it's still being processed.",
-      "Hello, I'm writing because I still haven't received my refund after returning the item more than 40 days ago. Please help.",
-      "Hi, it's been over 40 days since my return and I'm yet to see the refund. Could you look into this for me please?",
-      "Hello, I need an update on my refund status. The product was returned over 40 days ago and the money hasn't come back.",
+    // {DAYS} will be replaced with a random number between 35-40 at runtime
+    const LONG_REPLY_TEMPLATES = [
+      "Hello, I'd like to check on the status of my refund. The product was returned more than {DAYS} days ago, and I haven't received the payment yet. Could you let me know when it will be processed?",
+      "Hello, it has now been over {DAYS} days since we returned the product, and the refund still hasn't been issued. Please provide a specific date for when we can expect it to be processed.",
+      "Hi, could you give me an update on our refund? We returned the item over {DAYS} days ago and are still waiting.",
+      "Dear Support Team, I am writing to inquire about the status of our refund. The product was returned more than {DAYS} days ago, yet the refund has not been processed. I would appreciate an update on the expected timeline.",
+      "Hello, this is a follow-up regarding our pending refund. The product was returned over {DAYS} days ago, which exceeds any reasonable processing time. If the refund cannot be issued within the next few business days, please escalate this case or let me know who I can contact directly.",
+      "Hi there, I'm reaching out about a refund that's been pending for over {DAYS} days now. The item was returned a while ago and I still haven't seen the money back. Can you please look into this?",
+      "Hello, I returned my order more than {DAYS} days ago and the refund has not appeared in my account. Could you please check what's causing the delay?",
+      "Hi, I've been waiting over {DAYS} days for my refund after returning the product. This is well beyond the normal timeframe. Please advise when I can expect the payment.",
+      "Hello, just following up on a return I made over {DAYS} days ago. The refund hasn't come through yet. Could you check the status and let me know what's happening?",
+      "Hi, I need help with a refund that's significantly overdue. I returned the item more than {DAYS} days ago and haven't received any payment. Can someone look into this urgently?",
+      "Hello, I'm contacting you because my refund is now {DAYS}+ days overdue. The item was sent back weeks ago. What's the holdup?",
+      "Hi, quick question \u2014 where is my refund? It's been over {DAYS} days since the return was completed.",
+      "Hello, I'd appreciate some clarity on my pending refund. It's been well over {DAYS} days and I haven't received anything back yet.",
+      "Hi, I'm still waiting on a refund for an item I returned more than {DAYS} days ago. Can you confirm when this will be processed?",
+      "Hello, could you please prioritize my refund? The return was completed over {DAYS} days ago and I've heard nothing since.",
+      "Hi, I returned the product over {DAYS} days ago as instructed, but the refund hasn't shown up. Is there an issue with my case?",
+      "Hello, I've been patient but it's now been {DAYS}+ days without receiving my refund. Could you please investigate this?",
+      "Hi, my refund has been pending for over {DAYS} days. I'd like to know if there's a problem or if it's still being processed.",
+      "Hello, I'm writing because I still haven't received my refund after returning the item more than {DAYS} days ago. Please help.",
+      "Hi, it's been over {DAYS} days since my return and I'm yet to see the refund. Could you look into this for me please?",
+      "Hello, I need an update on my refund status. The product was returned over {DAYS} days ago and the money hasn't come back.",
       "Hi, I returned my item well over a month ago and still no refund. Can you tell me what's going on?",
-      "Hello, just checking in — my refund for the returned item is now over 40 days late. Any update?",
-      "Hi, could someone please look into my overdue refund? It's been more than 40 days since the return was received.",
-      "Hello, I'd like to escalate my refund request. It has been over 40 days since the item was returned and I've received nothing.",
-      "Hi, I'm getting concerned about my refund. The return was completed over 40 days ago. When should I expect the payment?",
-      "Hello, this is regarding order refund that's been outstanding for 40+ days. The item was returned on time. Please advise.",
-      "Hi, my return was confirmed received over 40 days ago but the refund is still missing from my account. Can you help?",
-      "Hello, I've contacted you before about this refund. It's now been over 40 days. I really need this resolved.",
-      "Hi, I'd like to know why my refund is taking more than 40 days. The product was returned as requested.",
-      "Hello, the refund for my returned order is now significantly overdue at 40+ days. Could you please check on this?",
-      "Hi, I'm following up again on my refund. Over 40 days have passed since the return and I still haven't been paid back.",
-      "Hello, can you please provide a timeline for my refund? It's been over 40 days since I returned the product.",
-      "Hi, I returned my order more than 40 days ago and am still waiting for the refund. This delay is unacceptable.",
-      "Hello, I would like to resolve my pending refund. The item was returned over 40 days ago. What are the next steps?",
-      "Hi, I'm reaching out once more about my refund. 40+ days is too long to wait. Please process it or escalate my case.",
-      "Hello, my refund request has been open for over 40 days now. I returned the item promptly. When will I be refunded?",
-      "Hi, I need assistance with a refund that should have been processed weeks ago. It's been over 40 days since the return.",
-      "Hello, I'm disappointed that my refund still hasn't arrived after 40+ days. Could you please look into this immediately?",
-      "Hi, just wanted to follow up on my return from over 40 days ago. Still no refund on my end. Any updates?"
+      "Hello, just checking in \u2014 my refund for the returned item is now over {DAYS} days late. Any update?",
+      "Hi, could someone please look into my overdue refund? It's been more than {DAYS} days since the return was received.",
+      "Hello, I'd like to escalate my refund request. It has been over {DAYS} days since the item was returned and I've received nothing.",
+      "Hi, I'm getting concerned about my refund. The return was completed over {DAYS} days ago. When should I expect the payment?",
+      "Hello, this is regarding order refund that's been outstanding for {DAYS}+ days. The item was returned on time. Please advise.",
+      "Hi, my return was confirmed received over {DAYS} days ago but the refund is still missing from my account. Can you help?",
+      "Hello, I've contacted you before about this refund. It's now been over {DAYS} days. I really need this resolved.",
+      "Hi, I'd like to know why my refund is taking more than {DAYS} days. The product was returned as requested.",
+      "Hello, the refund for my returned order is now significantly overdue at {DAYS}+ days. Could you please check on this?",
+      "Hi, I'm following up again on my refund. Over {DAYS} days have passed since the return and I still haven't been paid back.",
+      "Hello, can you please provide a timeline for my refund? It's been over {DAYS} days since I returned the product.",
+      "Hi, I returned my order more than {DAYS} days ago and am still waiting for the refund. This delay is unacceptable.",
+      "Hello, I would like to resolve my pending refund. The item was returned over {DAYS} days ago. What are the next steps?",
+      "Hi, I'm reaching out once more about my refund. {DAYS}+ days is too long to wait. Please process it or escalate my case.",
+      "Hello, my refund request has been open for over {DAYS} days now. I returned the item promptly. When will I be refunded?",
+      "Hi, I need assistance with a refund that should have been processed weeks ago. It's been over {DAYS} days since the return.",
+      "Hello, I'm disappointed that my refund still hasn't arrived after {DAYS}+ days. Could you please look into this immediately?",
+      "Hi, just wanted to follow up on my return from over {DAYS} days ago. Still no refund on my end. Any updates?"
     ];
+
+    // Replace {DAYS} with a random number between 35-40
+    function randomizeDays(text) {
+      const days = Math.floor(Math.random() * 6) + 35; // 35-40
+      return text.replace(/\{DAYS\}/g, days);
+    }
 
     function shuffle(arr) {
       const a = [...arr];
@@ -502,9 +509,9 @@
       const chatInputContainer = chatInput.closest('div');
       if (!chatInputContainer) return;
 
-      // Pick 3 random short + 5 random long
+      // Pick 3 random short + 5 random long (with randomized days 35-40)
       const selectedShort = shuffle(SHORT_REPLIES).slice(0, 3);
-      const selectedLong = shuffle(LONG_REPLIES).slice(0, 5);
+      const selectedLong = shuffle(LONG_REPLY_TEMPLATES).slice(0, 5).map(randomizeDays);
       const displayed = [...selectedShort, ...selectedLong];
 
       const container = document.createElement('div');
