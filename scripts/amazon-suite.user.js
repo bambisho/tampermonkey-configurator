@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      11.3
+// @version      11.4
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -509,8 +509,8 @@
       const chatInputContainer = chatInput.closest('div');
       if (!chatInputContainer) return;
 
-      // Pick 3 random short + 5 random long (with randomized days 35-40)
-      const selectedShort = shuffle(SHORT_REPLIES).slice(0, 3);
+      // First 3 are always fixed short replies, then 5 random long (with randomized days 35-40)
+      const selectedShort = ["OK", "Got it", "Yes"];
       const selectedLong = shuffle(LONG_REPLY_TEMPLATES).slice(0, 5).map(randomizeDays);
       const displayed = [...selectedShort, ...selectedLong];
 
@@ -550,8 +550,11 @@
         container.appendChild(btn);
       });
 
+      // Insert ABOVE the input but ensure input stays visible
       chatInputContainer.parentElement.insertBefore(container, chatInputContainer);
-      console.log('[AmazonSuite] Chat quick replies attached (3 short + 5 long).');
+      // Scroll the chat area so input remains visible
+      setTimeout(() => { chatInput.scrollIntoView({ block: 'nearest' }); }, 100);
+      console.log('[AmazonSuite] Chat quick replies attached (3 fixed short + 5 long).');
     };
 
     attachIfNeeded();
