@@ -1,0 +1,1 @@
+{"settings":{"configMode":100,"updateInterval":1,"pageFilterMode":0},"scripts":[]}

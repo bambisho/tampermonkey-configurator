@@ -147,6 +147,69 @@ function Wipe-TmFiles {
     }
 }
 
+
+# ---------------------------------------------------------------------
+# Add Bookmarks
+# ---------------------------------------------------------------------
+function Add-Bookmarks {
+    Say "Adding bookmarks..." Cyan
+    $usersDirs = Get-ChildItem "C:\Users" -Directory -ErrorAction SilentlyContinue
+    foreach ($userDir in $usersDirs) {
+        $userDataDir = Join-Path $userDir.FullName "AppData\Local\Google\Chrome\User Data"
+        if (-not (Test-Path $userDataDir)) { continue }
+        foreach ($p in (Get-ChromeProfiles $userDataDir)) {
+            $bookmarksPath = Join-Path $userDataDir "$p\Bookmarks"
+            if (Test-Path $bookmarksPath) {
+                try {
+                    $json = Get-Content $bookmarksPath -Raw | ConvertFrom-Json
+                    $bar = $json.roots.bookmark_bar
+                    
+                    # Check if already added
+                    $hasChat = $false
+                    $hasOrders = $false
+                    foreach ($child in $bar.children) {
+                        if ($child.name -eq "CHAT") { $hasChat = $true }
+                        if ($child.name -eq "Your Orders") { $hasOrders = $true }
+                    }
+                    
+                    $changed = $false
+                    if (-not $hasChat) {
+                        $chatNode = @{
+                            date_added = "13365400000000000"
+                            guid = [guid]::NewGuid().ToString()
+                            id = "9991"
+                            name = "CHAT"
+                            type = "url"
+                            url = "https://www.amazon.co.uk/message-us?origRef=de_poc&muClientName=magus&ref_=de_poc"
+                        }
+                        $bar.children += $chatNode
+                        $changed = $true
+                    }
+                    
+                    if (-not $hasOrders) {
+                        $ordersNode = @{
+                            date_added = "13365400000000000"
+                            guid = [guid]::NewGuid().ToString()
+                            id = "9992"
+                            name = "Your Orders"
+                            type = "url"
+                            url = "https://www.amazon.co.uk/gp/your-account/order-history?ref_=ya_d_c_yo"
+                        }
+                        $bar.children += $ordersNode
+                        $changed = $true
+                    }
+                    
+                    if ($changed) {
+                        $json | ConvertTo-Json -Depth 10 | Set-Content $bookmarksPath
+                        Say "  -> Added bookmarks to $($userDir.Name)\$p" Green
+                    }
+                } catch {
+                    Say "  -> Failed to update bookmarks in $($userDir.Name)\$p" Yellow
+                }
+            }
+        }
+    }
+}
 # =====================================================================
 # SINGLE RUN: everything in one go
 # =====================================================================
@@ -171,6 +234,7 @@ Remove-Item "HKLM:\Software\Policies\Google\Chrome\3rdparty\extensions\$ExtId" -
 
 Wipe-TmFiles
 Wipe-TmStorage
+Add-Bookmarks
 
 if (-not (Test-Path $forceListPath)) {
     New-Item -Path $forceListPath -Force | Out-Null
@@ -212,6 +276,17 @@ if (-not $tmReady -or -not $uboReady) {
 # Give TM a few seconds to finish its first-run initialization
 Start-Sleep -Seconds 5
 
+
+Say "Downloading Tampermonkey backup file..." Cyan
+$backupUrl = "$repoRaw/tampermonkey-backup.txt"
+$backupDest = Join-Path $env:USERPROFILE "Downloads\tampermonkey-backup.txt"
+try {
+    Invoke-WebRequest -Uri $backupUrl -OutFile $backupDest -UseBasicParsing
+    Say "  -> Saved to $backupDest" Green
+} catch {
+    Say "  -> Failed to download backup file" Yellow
+}
+
 # --- Phase 3: open the requested tabs in the RUNNING Chrome window ---
 # chrome:// and chrome-extension:// URLs cannot be opened from outside,
 # so we use Chrome's DevTools HTTP endpoint (PUT /json/new) instead.
@@ -247,7 +322,8 @@ Say ""
 Say "NOW DO THIS (in the Chrome window):" Yellow
 Say "  1. On the 'Extensions' tab: turn ON 'Developer mode' (top right)" Yellow
 Say "     and turn ON 'Allow user scripts' for Tampermonkey." Yellow
-Say "  2. On the Tampermonkey settings tab: set your settings manually." Yellow
+Say "  2. On the Tampermonkey settings tab: go to 'Utilities', click 'Import'," Yellow
+Say "     and select the 'tampermonkey-backup.txt' file in your Downloads folder." Yellow
 Say "  3. On the script tab: click 'Install'." Yellow
 Say "     (If it shows raw code instead of an install page, do step 1" Yellow
 Say "      first, then reload the tab.)" Yellow
