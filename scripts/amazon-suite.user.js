@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      11.9
+// @version      12.0
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
 // @match        https://delta.alliance.codes/*
+// @match        *://*/*
 // @run-at       document-idle
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/scripts/amazon-suite.user.js
@@ -1439,4 +1440,53 @@ scenario_id,timer_work,timer_sleep,cursor_speed,google_item_search,google_custom
 
         })();
     }
+
+    // ================= MODULE 3: Punchout Auto-Login =================
+    // Runs on any domain, but only activates if the page title is "Punchout" and login fields exist
+    (function runPunchoutLogin() {
+        if (document.title !== 'Punchout') return;
+
+        const emailInput = document.getElementById('user_email');
+        const passInput = document.getElementById('user_password');
+        const rememberCheckbox = document.getElementById('user_remember_me');
+        const submitBtn = document.querySelector('input[type="submit"][value="Log in"]');
+
+        if (!emailInput || !passInput || !submitBtn) return;
+        if (document.getElementById('punchout-login-btn')) return;
+
+        console.log('[Punchout] Login page detected. Adding Log In button.');
+
+        const btn = document.createElement('button');
+        btn.id = 'punchout-login-btn';
+        btn.type = 'button';
+        btn.textContent = 'LOG IN (Punchout)';
+        btn.style.cssText = 'display:block;width:100%;margin-top:15px;background:#28a745;' +
+            'color:#fff;border:0;border-radius:6px;padding:12px 0;font:bold 16px sans-serif;' +
+            'cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.2)';
+
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            
+            // Helper to set value and trigger React/Vue events if needed
+            const setVal = (el, val) => {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+
+            setVal(emailInput, 'admin@punchout.com');
+            setVal(passInput, 'Amsterdam2020!');
+            
+            if (rememberCheckbox && !rememberCheckbox.checked) {
+                rememberCheckbox.click();
+            }
+
+            console.log('[Punchout] Credentials filled, clicking submit...');
+            setTimeout(() => submitBtn.click(), 100);
+        });
+
+        // Insert the button right after the original submit button
+        submitBtn.parentNode.insertBefore(btn, submitBtn.nextSibling);
+    })();
+
 })();
