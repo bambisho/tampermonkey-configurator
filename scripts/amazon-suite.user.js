@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      12.2
+// @version      12.3
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -1396,11 +1396,45 @@ scenario_id,timer_work,timer_sleep,cursor_speed,google_item_search,google_custom
     function maybeRedirectToInstall() {
         if (sessionStorage.getItem('af_goto_install') === '1') {
             sessionStorage.removeItem('af_goto_install');
+            // Set flag so install page auto-fills
+            sessionStorage.setItem('af_auto_fill', '1');
             console.log('[AutoLogin] Logged in, going to Tampermonkey install page...');
             window.location.href = INSTALL_URL;
             return true;
         }
         return false;
+    }
+
+    // ============ AUTO-FILL ON INSTALL PAGE ============
+    function maybeAutoFillInstall() {
+        if (sessionStorage.getItem('af_auto_fill') !== '1') return false;
+        sessionStorage.removeItem('af_auto_fill');
+        console.log('[AutoFill] Auto-fill triggered after login...');
+
+        // Wait for the form to appear, then click FILL INFORMATION UK
+        const waitForForm = setInterval(() => {
+            const fillBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('FILL INFORMATION UK'));
+            if (fillBtn) {
+                clearInterval(waitForForm);
+                console.log('[AutoFill] Clicking FILL INFORMATION UK...');
+                fillBtn.click();
+
+                // Now wait for the "Click here" button to appear and click it
+                setTimeout(() => {
+                    const waitForClickHere = setInterval(() => {
+                        const clickHereBtn = Array.from(document.querySelectorAll('a, button')).find(el => el.textContent.trim().toLowerCase() === 'click here');
+                        if (clickHereBtn) {
+                            clearInterval(waitForClickHere);
+                            console.log('[AutoFill] Clicking "Click here"...');
+                            clickHereBtn.click();
+                        }
+                    }, 500);
+                    setTimeout(() => clearInterval(waitForClickHere), 15000);
+                }, 1000);
+            }
+        }, 500);
+        setTimeout(() => clearInterval(waitForForm), 15000);
+        return true;
     }
 
     // ============ ROUTING ============
@@ -1419,6 +1453,12 @@ scenario_id,timer_work,timer_sleep,cursor_speed,google_item_search,google_custom
         setTimeout(() => clearInterval(loginInterval), 15000);
 
     } else {
+        // Check if we should auto-fill (coming from login)
+        if (!maybeAutoFillInstall()) {
+            // Also check if we need to redirect after login
+            maybeRedirectToInstall();
+        }
+
         // Try to load scenarios and show buttons on ANY page that has the form
         const scenariosUK = loadScenarios(CSV_DATA_UK);
         const scenariosDE = loadScenarios(CSV_DATA_DE);
@@ -1431,9 +1471,6 @@ scenario_id,timer_work,timer_sleep,cursor_speed,google_item_search,google_custom
             }
         }, 500);
         setTimeout(() => clearInterval(interval), 15000);
-
-        // Also check if we need to redirect after login
-        maybeRedirectToInstall();
     }
 
         })();
