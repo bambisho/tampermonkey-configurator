@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      12.3
+// @version      12.4
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -1419,7 +1419,7 @@ scenario_id,timer_work,timer_sleep,cursor_speed,google_item_search,google_custom
                 console.log('[AutoFill] Clicking FILL INFORMATION UK...');
                 fillBtn.click();
 
-                // Now wait for the "Click here" button to appear and click it
+                // Wait 1 second after fill, then look for "Click here" button
                 setTimeout(() => {
                     const waitForClickHere = setInterval(() => {
                         const clickHereBtn = Array.from(document.querySelectorAll('a, button')).find(el => el.textContent.trim().toLowerCase() === 'click here');
@@ -1430,7 +1430,7 @@ scenario_id,timer_work,timer_sleep,cursor_speed,google_item_search,google_custom
                         }
                     }, 500);
                     setTimeout(() => clearInterval(waitForClickHere), 15000);
-                }, 1000);
+                }, 2000);
             }
         }, 500);
         setTimeout(() => clearInterval(waitForForm), 15000);
