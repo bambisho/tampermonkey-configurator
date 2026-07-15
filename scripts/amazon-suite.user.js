@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      12.0
+// @version      12.2
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -312,27 +312,25 @@
   function initReturnsAutoFill() {
     if (!window.location.pathname.includes('/returns/')) return;
     
-    const attachIfNeeded = () => {
-      if (document.getElementById('ext-returns-fill-btn')) return;
+    let filled = false;
+    const tryAutoFill = () => {
+      if (filled) return;
       
-      // Look for the "What's the condition of the item?" header or similar container
+      // Look for the "What's the condition of the item?" header
       const conditionHeader = Array.from(document.querySelectorAll('h1, h2, h3')).find(el => el.textContent.includes('condition of the item'));
       if (!conditionHeader) return;
       
-      const btn = createButton('ext-returns-fill-btn', 'Auto-Fill Condition');
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        btn.textContent = 'Filling...';
-        btn.style.background = '#f0a030';
-        fillReturnsCondition();
-      });
-      
-      conditionHeader.parentElement.insertBefore(btn, conditionHeader.nextSibling);
-      console.log('[AddressFiller] Returns auto-fill button attached.');
+      filled = true;
+      console.log('[AddressFiller] Condition page detected, auto-filling...');
+      fillReturnsCondition();
     };
 
-    attachIfNeeded();
-    setInterval(attachIfNeeded, 1500);
+    tryAutoFill();
+    const interval = setInterval(() => {
+      tryAutoFill();
+      if (filled) clearInterval(interval);
+    }, 1000);
+    setTimeout(() => clearInterval(interval), 30000);
   }
 
   function fillReturnsCondition() {
