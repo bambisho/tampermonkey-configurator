@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      12.4
+// @version      12.5
 // @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -334,7 +334,7 @@
   }
 
   function fillReturnsCondition() {
-    // Answers: Yes, Yes, No, None, Yes (last one conditional)
+    // Answers: Yes, Yes, Yes, None, Yes
     const questions = document.querySelectorAll('.a-row.a-spacing-base');
     
     // Helper to click a button by text within a container
@@ -352,7 +352,7 @@
 
     // 1. Are you returning the complete item... -> Yes
     // 2. Are you returning the item in its original product packaging... -> Yes
-    // 3. Have you used the item? -> No
+    // 3. Have you used the item? -> Yes
     // 4. Does the item show any of these signs of use or damage? -> None
     // 5. If you started setting up this device... -> Yes
     
@@ -364,7 +364,7 @@
       setTimeout(() => {
         clickButtonByText(allButtonGroups[1], 'Yes');
         setTimeout(() => {
-          clickButtonByText(allButtonGroups[2], 'No');
+          clickButtonByText(allButtonGroups[2], 'Yes');
           setTimeout(() => {
             clickButtonByText(allButtonGroups[3], 'None');
             setTimeout(() => {
