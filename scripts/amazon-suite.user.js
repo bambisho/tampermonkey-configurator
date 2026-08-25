@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      12.5
-// @description  Combined: one-click address filling on Amazon UK/DE + auto-login and scenario autofill on delta.alliance.codes
+// @version      13.0
+// @description  Amazon UK/DE address tools, test-mode return workflow, chat replies, and Delta scenario autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
 // @match        https://delta.alliance.codes/*
@@ -308,83 +308,368 @@
     }, 2000);
   }
 
-  // ========== RETURNS AUTO-FILL FLOW ==========
+  // ========== RETURNS TEST WORKFLOW ==========
+  // Starts only when the user presses the injected button. It advances through
+  // the reason, condition and refund-method pages, then stops before the final
+  // collection-address / confirmation step.
+  const RETURN_WORKFLOW_KEY = 'amazon_return_test_workflow_v1';
+  const RETURN_WORKFLOW_MAX_AGE_MS = 10 * 60 * 1000;
+  const RETURN_REASON_LIBRARY = {
+    'RO_CR-DEFECTIVE': [
+      'Item is completely defective', 'Product does not work', 'Received a defective item',
+      'Item stopped working completely', 'Defective product received', 'Item does not function',
+      'Product is not working', 'Received a broken item', 'Item arrived completely defective',
+      'Product fails to work', 'Device does not turn on', 'Item is clearly defective',
+      'Product arrived broken', 'Unit does not work', 'Received faulty product',
+      'Item is completely broken', 'Product is faulty', 'Completely defective item',
+      'Product simply does not work', 'Item fails to function'
+    ],
+    'RO_AMZ-PG-BAD-DESC': [
+      'Inaccurate website description', 'Not as described online', 'Description was not accurate',
+      'Item differs from description', 'Wrong details on website', 'Website description was wrong',
+      'Misleading product description', 'Product not as described', 'Inaccurate product details',
+      'False website description', 'Details did not match', 'Online description was incorrect',
+      'Incorrect product information', 'Mismatched website details', 'Item description was wrong',
+      'Poor product description', 'Does not match description', 'Website details were wrong',
+      'Inaccurate online description', 'Description was completely wrong'
+    ],
+    'RO_CR-MISSING_PARTS': [
+      'Missing some pieces', 'Incomplete item received', 'Parts are missing',
+      'Accessories not included', 'Missing important components', 'Package missing items',
+      'Did not include parts', 'Some pieces missing', 'Lacking required accessories',
+      'Arrived with missing parts', 'Components were missing', 'Missing hardware pieces',
+      'Not all parts included', 'Missing necessary accessories', 'Missing pieces from box',
+      'Incomplete product received', 'Accessories were missing', 'Parts not in box',
+      'Missing essential parts', 'Lacking included accessories'
+    ],
+    'RO_CR-NOT_COMPATIBLE': [
+      'Not compatible with device', 'Incompatible with intended use', 'Does not fit needs',
+      'Not useful for purpose', 'Incompatible with system', 'Not the right fit',
+      'Does not work as intended', 'Incompatible with setup', 'Not suitable for needs',
+      'Does not match requirements', 'Not useful as expected', 'Incompatible with equipment',
+      'Does not serve intended purpose', 'Not compatible with setup', 'Wrong fit for use',
+      'Does not suit purpose', 'Incompatible for intended use', 'Not useful for project',
+      'Does not meet needs', 'Not compatible with gear'
+    ],
+    'RO_CR-DAMAGED_BY_CARRIER': [
+      'Box and item damaged', 'Broken during shipping', 'Crushed in transit',
+      'Carrier damaged package', 'Damaged delivery box', 'Item smashed in box',
+      'Broken box and product', 'Ruined during delivery', 'Package arrived damaged',
+      'Shipping box crushed', 'Damaged by carrier', 'Arrived completely broken',
+      'Delivery box destroyed', 'Product broken in transit', 'Crushed delivery package',
+      'Box damaged item ruined', 'Shipping damage to item', 'Broken in shipping',
+      'Package and item crushed', 'Damaged during transport'
+    ],
+    'RO_CR-QUALITY_UNACCEPTABLE': [
+      'Poor quality item', 'Performance not adequate', 'Bad product quality',
+      'Unacceptable performance', 'Quality is too low', 'Does not perform well',
+      'Inferior product quality', 'Item performs poorly', 'Terrible build quality',
+      'Quality not as expected', 'Subpar performance', 'Unacceptable item quality',
+      'Poor overall performance', 'Bad quality product', 'Performance is inadequate',
+      'Low quality materials', 'Does not work well', 'Unacceptable product quality',
+      'Inferior performance', 'Quality is lacking'
+    ],
+    'RO_CR-DAMAGED_BY_FC': [
+      'Item damaged inside box', 'Broken item intact packaging', 'Damaged goods fine box',
+      'Product broken box okay', 'Item ruined package safe', 'Broken inside perfect box',
+      'Damaged item good packaging', 'Box fine product damaged', 'Item smashed packaging intact',
+      'Defective item undamaged box', 'Product damaged inside envelope', 'Damaged contents good box',
+      'Item broken envelope fine', 'Broken product safe packaging', 'Damaged item unharmed box',
+      'Box okay product ruined', 'Item crushed packaging intact', 'Product broken box undamaged',
+      'Item damaged perfect envelope', 'Damaged item box fine'
+    ]
+  };
+  const RETURN_REASON_KEYS = Object.keys(RETURN_REASON_LIBRARY);
+  const RETURN_CONDITION_PATTERNS = [
+    [
+      'RO_EU_STANDARD_CONDITION_COMPLETE_PRODUCT_YES',
+      'RO_EU_STANDARD_CONDITION_ORIGINAL_PACKAGING_YES',
+      'RO_EU_STANDARD_CONDITION_ITEM_USED_YES',
+      'RO_EU_STANDARD_CONDITION_SIGNS_DAMAGE_NONE',
+      'RO_EU_CONNECTED_DEVICES_ACCOUNT_RESET_YES'
+    ],
+    [
+      'RO_EU_STANDARD_CONDITION_COMPLETE_PRODUCT_YES',
+      'RO_EU_STANDARD_CONDITION_ORIGINAL_PACKAGING_YES',
+      'RO_EU_STANDARD_CONDITION_ITEM_USED_NO',
+      'RO_EU_STANDARD_CONDITION_SIGNS_DAMAGE_NONE',
+      'RO_EU_CONNECTED_DEVICES_ACCOUNT_RESET_YES'
+    ]
+  ];
+
   function initReturnsAutoFill() {
     if (!window.location.pathname.includes('/returns/')) return;
-    
-    let filled = false;
-    const tryAutoFill = () => {
-      if (filled) return;
-      
-      // Look for the "What's the condition of the item?" header
-      const conditionHeader = Array.from(document.querySelectorAll('h1, h2, h3')).find(el => el.textContent.includes('condition of the item'));
-      if (!conditionHeader) return;
-      
-      filled = true;
-      console.log('[AddressFiller] Condition page detected, auto-filling...');
-      fillReturnsCondition();
+
+    let busy = false;
+    const tick = async () => {
+      attachReturnWorkflowButton();
+      if (busy || !readReturnWorkflowState()) return;
+      busy = true;
+      try {
+        await resumeReturnWorkflow();
+      } catch (error) {
+        console.error('[ReturnWorkflow] Failed:', error);
+        setReturnWorkflowStatus('Stopped: ' + (error.message || 'page not recognized'), 'error');
+        clearReturnWorkflowState();
+      } finally {
+        busy = false;
+      }
     };
 
-    tryAutoFill();
-    const interval = setInterval(() => {
-      tryAutoFill();
-      if (filled) clearInterval(interval);
-    }, 1000);
-    setTimeout(() => clearInterval(interval), 30000);
+    tick();
+    setInterval(tick, 800);
   }
 
-  function fillReturnsCondition() {
-    // Answers: Yes, Yes, Yes, None, Yes
-    const questions = document.querySelectorAll('.a-row.a-spacing-base');
-    
-    // Helper to click a button by text within a container
-    const clickButtonByText = (container, text) => {
-      if (!container) return false;
-      const buttons = container.querySelectorAll('.a-button-text');
-      for (const btn of buttons) {
-        if (btn.textContent.trim() === text) {
-          btn.click();
-          return true;
-        }
-      }
-      return false;
-    };
+  function normalizeReturnText(value) {
+    return String(value || '').replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase();
+  }
 
-    // 1. Are you returning the complete item... -> Yes
-    // 2. Are you returning the item in its original product packaging... -> Yes
-    // 3. Have you used the item? -> Yes
-    // 4. Does the item show any of these signs of use or damage? -> None
-    // 5. If you started setting up this device... -> Yes
-    
-    // We'll just find all the button groups and click the appropriate ones based on order or text
-    const allButtonGroups = document.querySelectorAll('.a-button-group');
-    
-    if (allButtonGroups.length >= 4) {
-      clickButtonByText(allButtonGroups[0], 'Yes');
-      setTimeout(() => {
-        clickButtonByText(allButtonGroups[1], 'Yes');
-        setTimeout(() => {
-          clickButtonByText(allButtonGroups[2], 'Yes');
-          setTimeout(() => {
-            clickButtonByText(allButtonGroups[3], 'None');
-            setTimeout(() => {
-              if (allButtonGroups.length >= 5) {
-                clickButtonByText(allButtonGroups[4], 'Yes');
-              }
-              
-              // Click Continue
-              setTimeout(() => {
-                const continueBtn = document.querySelector('input[name="continue"]');
-                if (continueBtn) continueBtn.click();
-                updateButton('ext-returns-fill-btn', 'done', 'Filled!');
-              }, 500);
-            }, 300);
-          }, 300);
-        }, 300);
-      }, 300);
-    } else {
-      updateButton('ext-returns-fill-btn', 'error', 'Form not found');
+  function randomItem(items) {
+    return items[Math.floor(Math.random() * items.length)];
+  }
+
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function waitForReturnElement(findFn, timeoutMs = 8000, intervalMs = 150) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const result = findFn();
+      if (result) return result;
+      await delay(intervalMs);
     }
+    return null;
+  }
+
+  function setNativeReturnValue(element, value) {
+    if (!element) return;
+    const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+      : element instanceof HTMLSelectElement ? HTMLSelectElement.prototype
+      : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    if (setter) setter.call(element, value);
+    else element.value = value;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function saveReturnWorkflowState(stage, extra = {}) {
+    sessionStorage.setItem(RETURN_WORKFLOW_KEY, JSON.stringify({
+      ...extra,
+      stage,
+      startedAt: Date.now()
+    }));
+  }
+
+  function readReturnWorkflowState() {
+    try {
+      const state = JSON.parse(sessionStorage.getItem(RETURN_WORKFLOW_KEY) || 'null');
+      if (!state || !state.startedAt || Date.now() - state.startedAt > RETURN_WORKFLOW_MAX_AGE_MS) {
+        clearReturnWorkflowState();
+        return null;
+      }
+      return state;
+    } catch {
+      clearReturnWorkflowState();
+      return null;
+    }
+  }
+
+  function clearReturnWorkflowState() {
+    sessionStorage.removeItem(RETURN_WORKFLOW_KEY);
+  }
+
+  function isReturnElementVisible(element) {
+    if (!element) return false;
+    if (element.closest('[hidden], .aok-hidden, [aria-hidden="true"]')) return false;
+    const style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+    return !style || (style.display !== 'none' && style.visibility !== 'hidden');
+  }
+
+  function findReturnHeading(fragment) {
+    const wanted = normalizeReturnText(fragment);
+    return Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"]')).find(element =>
+      isReturnElementVisible(element) && normalizeReturnText(element.textContent).includes(wanted)
+    );
+  }
+
+  function findReasonSelect() {
+    return Array.from(document.querySelectorAll('select')).find(select =>
+      isReturnElementVisible(select)
+      && Array.from(select.options || []).some(option => RETURN_REASON_KEYS.includes(option.value))
+    ) || null;
+  }
+
+  function findReasonTextarea(reasonKey) {
+    return Array.from(document.querySelectorAll('textarea')).find(textarea =>
+      isReturnElementVisible(textarea)
+      && `${textarea.id || ''} ${textarea.name || ''}`.includes(reasonKey)
+    ) || null;
+  }
+
+  function isReturnControlEnabled(element) {
+    if (!isReturnElementVisible(element) || element.disabled || element.getAttribute('aria-disabled') === 'true') return false;
+    const disabledWrapper = element.closest('.a-button-disabled, [aria-disabled="true"]');
+    return !disabledWrapper;
+  }
+
+  function findReturnContinueButton() {
+    const direct = Array.from(document.querySelectorAll('input[name="continue"], button[name="continue"]'))
+      .find(isReturnControlEnabled);
+    if (direct) return direct;
+
+    return Array.from(document.querySelectorAll('button, input[type="submit"], a[role="button"]')).find(element => {
+      if (!isReturnControlEnabled(element)) return false;
+      const ownText = element.value || element.textContent || '';
+      const wrapperText = element.closest('.a-button')?.textContent || '';
+      return normalizeReturnText(ownText || wrapperText) === 'continue';
+    }) || null;
+  }
+
+  function setReturnWorkflowStatus(message, kind = 'working') {
+    const btn = document.getElementById('ext-return-workflow-btn');
+    if (!btn) return;
+    btn.textContent = message;
+    btn.style.background = kind === 'error' ? '#dc3545' : kind === 'done' ? '#28a745' : '#f0a030';
+  }
+
+  function attachReturnWorkflowButton() {
+    if (document.getElementById('ext-return-workflow-btn')) return;
+    const heading = findReturnHeading('reason for return');
+    const reasonSelect = findReasonSelect();
+    if (!heading || !reasonSelect) return;
+
+    const btn = createButton('ext-return-workflow-btn', 'RUN RETURN TEST');
+    btn.style.marginLeft = '18px';
+    btn.addEventListener('click', event => {
+      event.preventDefault();
+      if (readReturnWorkflowState()) return;
+      setReturnWorkflowStatus('Starting return test...');
+      saveReturnWorkflowState('reason');
+    });
+    heading.appendChild(btn);
+  }
+
+  async function runReasonStep() {
+    const select = await waitForReturnElement(findReasonSelect);
+    if (!select) throw new Error('return reason dropdown not found');
+
+    const availableKeys = RETURN_REASON_KEYS.filter(reasonKey =>
+      Array.from(select.options || []).some(option => option.value === reasonKey)
+    );
+    if (!availableKeys.length) throw new Error('marked return reasons unavailable');
+
+    const reasonKey = randomItem(availableKeys);
+    const description = randomItem(RETURN_REASON_LIBRARY[reasonKey]);
+    saveReturnWorkflowState('reason', { reasonKey, description });
+    setNativeReturnValue(select, reasonKey);
+    setReturnWorkflowStatus('Reason selected...');
+
+    const textarea = await waitForReturnElement(() => findReasonTextarea(reasonKey), 5000);
+    if (textarea) setNativeReturnValue(textarea, description);
+
+    const continueButton = await waitForReturnElement(findReturnContinueButton, 8000);
+    if (!continueButton) throw new Error('reason page Continue not found');
+    saveReturnWorkflowState('condition', { reasonKey, description });
+    continueButton.click();
+    await delay(1200);
+  }
+
+  async function resumeReturnWorkflow() {
+    const state = readReturnWorkflowState();
+    if (!state) return;
+
+    if (isReturnStopPage()) {
+      showReturnStopNotice();
+      clearReturnWorkflowState();
+      return;
+    }
+
+    if (findReturnHeading('how can we make it right')) {
+      await runRefundMethodStep(state);
+      return;
+    }
+
+    if (findReturnHeading('condition of the item')) {
+      await runConditionStep(state);
+      return;
+    }
+
+    if (findReasonSelect()) {
+      await runReasonStep();
+    }
+  }
+
+  async function runConditionStep(state) {
+    const pattern = randomItem(RETURN_CONDITION_PATTERNS);
+    let clicked = 0;
+
+    for (const responseValue of pattern) {
+      const option = document.querySelector(`input.product-condition-question-response-option-button-native[value="${responseValue}"]`)
+        || document.querySelector(`input[value="${responseValue}"]`);
+      if (!option || option.disabled || !isReturnElementVisible(option)) continue;
+      option.click();
+      clicked++;
+      await delay(250);
+    }
+
+    if (clicked < 4) throw new Error('condition questions not recognized');
+    const continueButton = await waitForReturnElement(findReturnContinueButton, 8000);
+    if (!continueButton) throw new Error('condition page Continue not found');
+    saveReturnWorkflowState('refund-method', state);
+    continueButton.click();
+    await delay(1200);
+  }
+
+  function findOriginalPaymentRadio() {
+    const textElement = Array.from(document.querySelectorAll('label, span, div'))
+      .filter(element => isReturnElementVisible(element)
+        && normalizeReturnText(element.textContent).includes('refund to your original payment method'))
+      .sort((a, b) => a.textContent.length - b.textContent.length)[0];
+
+    if (textElement) {
+      const label = textElement.closest('label');
+      const section = textElement.closest('.a-row, .a-section') || textElement.parentElement;
+      const associatedRadio = label?.querySelector('input[type="radio"]')
+        || section?.querySelector('input[type="radio"]')
+        || textElement.previousElementSibling?.matches?.('input[type="radio"]') && textElement.previousElementSibling;
+      if (associatedRadio) return associatedRadio;
+    }
+
+    return Array.from(document.querySelectorAll('input[type="radio"]')).find(element =>
+      isReturnElementVisible(element) && element.checked
+    ) || null;
+  }
+
+  async function runRefundMethodStep(state) {
+    const radio = findOriginalPaymentRadio();
+    if (radio && !radio.checked) radio.click();
+
+    const continueButton = await waitForReturnElement(findReturnContinueButton, 8000);
+    if (!continueButton) throw new Error('refund-method Continue not found');
+    saveReturnWorkflowState('shipping', state);
+    continueButton.click();
+    await delay(1200);
+  }
+
+  function isReturnStopPage() {
+    const bodyText = normalizeReturnText(document.body?.innerText || '');
+    return Boolean(findReturnHeading('how would you like to return your items'))
+      || bodyText.includes('collection address')
+      || bodyText.includes('confirm your return');
+  }
+
+  function showReturnStopNotice() {
+    if (document.getElementById('ext-return-stop-notice')) return;
+    const notice = document.createElement('div');
+    notice.id = 'ext-return-stop-notice';
+    notice.textContent = 'RETURN TEST STOPPED — choose the collection address and continue manually.';
+    notice.style.cssText = 'position:fixed;top:12px;right:12px;z-index:9999999;background:#fff3cd;' +
+      'color:#664d03;border:2px solid #ffca2c;border-radius:8px;padding:12px 16px;' +
+      'font:bold 14px sans-serif;box-shadow:0 3px 12px rgba(0,0,0,.25);max-width:420px';
+    document.body.appendChild(notice);
+    console.log('[ReturnWorkflow] Stopped before collection address / final confirmation.');
   }
 
   // ========== CHAT QUICK REPLIES FLOW ==========
