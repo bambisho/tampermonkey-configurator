@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      13.0
+// @version      13.2
 // @description  Amazon UK/DE address tools, test-mode return workflow, chat replies, and Delta scenario autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -35,14 +35,19 @@
   heartbeat.title = 'Amazon Address Filler is running';
   document.body.appendChild(heartbeat);
 
-  if (isUK) {
-    initUKReturns();
-    initUKAddPage(); // New UK address page flow
-    initReturnsAutoFill(); // New returns auto-fill flow
-    initChatQuickReplies(); // New chat quick replies flow
-  } else if (isDE) {
-    initDEAddPage();
-  }
+  // Defer startup until this module has initialized all const data and helpers.
+  setTimeout(() => {
+    if (isUK || isDE) {
+      initAddressAddPage();
+      initOrderReturnLaunchers();
+      initReturnLabelTrackingBanner();
+    }
+    if (isUK) {
+      initUKReturns();
+      initReturnsAutoFill();
+      initChatQuickReplies();
+    }
+  }, 0);
 
   // ========== UK RETURNS FLOW ==========
   function initUKReturns() {
@@ -189,15 +194,15 @@
     clearAndSet('address-ui-widgets-enterAddressDistrictOrCounty', county);
   }
 
-  // ========== GERMANY ADD PAGE FLOW ==========
-  function initDEAddPage() {
-    // Persistent re-arm loop (same reasoning as the UK flow): survive
-    // Amazon soft navigations and late-rendered forms indefinitely.
+  // ========== UK + GERMANY ADD PAGE FLOW ==========
+  // Both controls are available on both amazon.co.uk and amazon.de.
+  function initAddressAddPage() {
     const attachIfNeeded = () => {
-      if (document.getElementById('ext-de-address-btn')) return;
+      if (!window.location.pathname.includes('/a/addresses')) return;
+      if (document.getElementById('ext-address-country-buttons')) return;
       if (document.getElementById('address-ui-widgets-form-submit-button')) {
-        injectDEButton();
-        console.log('[AddressFiller] German address button attached.');
+        injectAddressCountryButtons();
+        console.log('[AddressFiller] UK and DE address buttons attached.');
       }
     };
 
@@ -205,107 +210,278 @@
     setInterval(attachIfNeeded, 1500);
   }
 
-  function injectDEButton() {
-    if (document.getElementById('ext-de-address-btn')) return;
+  function injectAddressCountryButtons() {
+    if (document.getElementById('ext-address-country-buttons')) return;
+    const submitSpan = document.getElementById('address-ui-widgets-form-submit-button');
+    if (!submitSpan || !submitSpan.parentElement) return;
 
-    const btn = createButton('ext-de-address-btn', 'Add German Address');
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      btn.textContent = 'Filling...';
-      btn.style.background = '#f0a030';
-      const addr = DE_ADDRESSES[Math.floor(Math.random() * DE_ADDRESSES.length)];
-      fillGermanAddress(addr);
+    const controls = document.createElement('span');
+    controls.id = 'ext-address-country-buttons';
+    controls.style.cssText = 'display:inline-flex;gap:8px;margin-left:10px;vertical-align:middle;flex-wrap:wrap';
+
+    const ukBtn = createButton('ext-uk-address-btn', 'Add UK Address');
+    ukBtn.style.marginLeft = '0';
+    ukBtn.addEventListener('click', event => {
+      event.preventDefault();
+      setAddressButtonBusy(ukBtn);
+      const address = UK_ADDRESSES[Math.floor(Math.random() * UK_ADDRESSES.length)];
+      fillUKAddress(address);
     });
 
-    // Place next to the submit button
-    const submitSpan = document.getElementById('address-ui-widgets-form-submit-button');
-    if (submitSpan) {
-      submitSpan.parentElement.insertBefore(btn, submitSpan.nextSibling);
-    }
+    const deBtn = createButton('ext-de-address-btn', 'Add DE Address');
+    deBtn.style.marginLeft = '0';
+    deBtn.style.background = '#007bff';
+    deBtn.addEventListener('mouseenter', () => { if (!deBtn.disabled) deBtn.style.background = '#0069d9'; });
+    deBtn.addEventListener('mouseleave', () => { if (!deBtn.disabled) deBtn.style.background = '#007bff'; });
+    deBtn.addEventListener('click', event => {
+      event.preventDefault();
+      setAddressButtonBusy(deBtn);
+      const address = DE_ADDRESSES[Math.floor(Math.random() * DE_ADDRESSES.length)];
+      fillGermanAddress(address);
+    });
+
+    controls.appendChild(ukBtn);
+    controls.appendChild(deBtn);
+    submitSpan.parentElement.insertBefore(controls, submitSpan.nextSibling);
+  }
+
+  function setAddressButtonBusy(button) {
+    button.textContent = 'Filling...';
+    button.style.background = '#f0a030';
+    button.disabled = true;
+  }
+
+  function waitForAddressForm(callback) {
+    setTimeout(() => {
+      observeFor(() => {
+        const city = document.getElementById('address-ui-widgets-enterAddressCity');
+        return city && city.offsetParent !== null ? city : null;
+      }, () => setTimeout(callback, 500), 10000);
+    }, 1800);
   }
 
   function fillGermanAddress(addr) {
-    // Country should already be DE, no change needed
+    setCountry('DE', 'Germany');
+    waitForAddressForm(() => {
+      clearAndSet('address-ui-widgets-enterAddressFullName', addr.name);
+      clearAndSet('address-ui-widgets-enterAddressCompanyName', addr.company || '');
+      clearAndSet('address-ui-widgets-enterAddressPhoneNumber', addr.phone);
 
-    // IMPORTANT: On amazon.de, Line2 = street address, Line1 = secondary
-    clearAndSet('address-ui-widgets-enterAddressFullName', addr.name);
-    if (addr.company) {
-      clearAndSet('address-ui-widgets-enterAddressCompanyName', addr.company);
-    }
-    clearAndSet('address-ui-widgets-enterAddressPhoneNumber', addr.phone);
+      // amazon.de renders the German street as Line2; amazon.co.uk uses Line1.
+      const streetField = isDE ? 'address-ui-widgets-enterAddressLine2' : 'address-ui-widgets-enterAddressLine1';
+      const secondaryField = isDE ? 'address-ui-widgets-enterAddressLine1' : 'address-ui-widgets-enterAddressLine2';
+      clearAndSet(streetField, addr.line1);
+      dismissAutocomplete(streetField);
+      clearAndSet(secondaryField, addr.line2 || '');
+      clearAndSet('address-ui-widgets-enterAddressPostalCode', addr.plz);
+      clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
 
-    // Street field (Line2 on .de) - has combobox, needs Escape after
-    clearAndSet('address-ui-widgets-enterAddressLine2', addr.line1);
-    dismissAutocomplete('address-ui-widgets-enterAddressLine2');
-
-    clearAndSet('address-ui-widgets-enterAddressLine1', addr.line2 || '');
-    clearAndSet('address-ui-widgets-enterAddressPostalCode', addr.plz);
-    clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
-
-    // Submit after brief delay for autocomplete to dismiss
-    setTimeout(() => {
-      clickAddressSubmit();
-      updateButton('ext-de-address-btn', 'done', 'Address Added!');
-    }, 600);
-  }
-
-  // ========== UK ADD PAGE FLOW ==========
-  function initUKAddPage() {
-    if (!window.location.pathname.includes('/a/addresses')) return;
-    
-    const attachIfNeeded = () => {
-      if (document.getElementById('ext-uk-address-btn')) return;
-      if (document.getElementById('address-ui-widgets-form-submit-button')) {
-        injectUKButton();
-        console.log('[AddressFiller] UK address button attached.');
-      }
-    };
-
-    attachIfNeeded();
-    setInterval(attachIfNeeded, 1500);
-  }
-
-  function injectUKButton() {
-    if (document.getElementById('ext-uk-address-btn')) return;
-
-    const btn = createButton('ext-uk-address-btn', 'Add UK Address');
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      btn.textContent = 'Filling...';
-      btn.style.background = '#f0a030';
-      const addr = UK_ADDRESSES[Math.floor(Math.random() * UK_ADDRESSES.length)];
-      fillUKAddress(addr);
+      setTimeout(() => {
+        clickAddressSubmit();
+        updateButton('ext-de-address-btn', 'done', 'Address Added!');
+      }, 600);
     });
-
-    const submitSpan = document.getElementById('address-ui-widgets-form-submit-button');
-    if (submitSpan) {
-      submitSpan.parentElement.insertBefore(btn, submitSpan.nextSibling);
-    }
   }
 
   function fillUKAddress(addr) {
     setCountry('GB', 'United Kingdom');
-    
-    setTimeout(() => {
-      observeFor(() => {
-        const cityEl = document.getElementById('address-ui-widgets-enterAddressCity');
-        return (cityEl && cityEl.offsetParent !== null) ? cityEl : null;
-      }, () => {
-        setTimeout(() => {
-          clearAndSet('address-ui-widgets-enterAddressFullName', addr.name);
-          clearAndSet('address-ui-widgets-enterAddressPhoneNumber', addr.phone);
-          clearAndSet('address-ui-widgets-enterAddressLine1', addr.address1);
-          clearAndSet('address-ui-widgets-enterAddressLine2', '');
-          clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
-          clearAndSet('address-ui-widgets-enterAddressPostalCode', addr.postcode);
+    waitForAddressForm(() => {
+      clearAndSet('address-ui-widgets-enterAddressFullName', addr.name);
+      clearAndSet('address-ui-widgets-enterAddressCompanyName', addr.company || '');
+      clearAndSet('address-ui-widgets-enterAddressPhoneNumber', addr.phone);
+      clearAndSet('address-ui-widgets-enterAddressLine1', addr.address1);
+      clearAndSet('address-ui-widgets-enterAddressLine2', addr.address2 || '');
+      clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
+      clearAndSet('address-ui-widgets-enterAddressStateOrRegion', addr.county || '');
+      clearAndSet('address-ui-widgets-enterAddressPostalCode', addr.postcode);
 
-          setTimeout(() => {
-            clickAddressSubmit();
-            updateButton('ext-uk-address-btn', 'done', 'Address Added!');
-          }, 600);
-        }, 500);
+      setTimeout(() => {
+        clickAddressSubmit();
+        updateButton('ext-uk-address-btn', 'done', 'Address Added!');
+      }, 600);
+    });
+  }
+
+  // ========== ORDERS PAGE RETURN LAUNCHERS ==========
+  function initOrderReturnLaunchers() {
+    const attachLaunchers = () => {
+      const path = window.location.pathname;
+      if (!/\/your-orders|\/order-history|\/order-details/i.test(path)) return;
+
+      const returnLinks = Array.from(document.querySelectorAll('a[href]')).filter(link => {
+        const href = link.getAttribute('href') || '';
+        const text = normalizeReturnText(link.textContent || link.closest('.a-button')?.textContent);
+        const returnHref = /\/spr\/returns\/(?:cart|start|order)/i.test(href)
+          || /\/returns\/cart/i.test(href);
+        const returnLabel = text.includes('return items')
+          || text.includes('return item')
+          || text.includes('artikel zurück')
+          || text.includes('artikel zurucksenden');
+        return returnHref && (returnLabel || href.includes('/spr/returns/cart'));
       });
-    }, 2000);
+
+      for (const returnLink of returnLinks) injectOrderReturnLauncher(returnLink);
+    };
+
+    attachLaunchers();
+    setInterval(attachLaunchers, 1500);
+  }
+
+  function injectOrderReturnLauncher(returnLink) {
+    if (returnLink.dataset.extReturnLauncherAttached === 'true') return;
+    const returnControl = returnLink.closest('.a-button') || returnLink;
+    const parent = returnControl.parentElement;
+    if (!parent) return;
+
+    const launcher = document.createElement('a');
+    launcher.className = 'ext-order-return-launcher';
+    launcher.href = returnLink.href;
+    launcher.rel = 'noopener';
+    launcher.title = 'Start return (middle-click opens a new tab)';
+    launcher.setAttribute('aria-label', launcher.title);
+    launcher.textContent = '↩';
+    launcher.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:28px;height:26px;' +
+      'margin-right:6px;border:1px solid #007185;border-radius:7px;background:#fff;color:#007185;' +
+      'font:bold 18px/1 Arial,sans-serif;text-decoration:none;vertical-align:middle;box-sizing:border-box';
+    launcher.addEventListener('mouseenter', () => { launcher.style.background = '#e7f4f5'; });
+    launcher.addEventListener('mouseleave', () => { launcher.style.background = '#fff'; });
+
+    parent.insertBefore(launcher, returnControl);
+    returnLink.dataset.extReturnLauncherAttached = 'true';
+  }
+
+  // ========== RETURN LABEL TRACKING BANNER ==========
+  function initReturnLabelTrackingBanner() {
+    if (!window.location.pathname.includes('/spr/returns/label/')) return;
+
+    const attachIfReady = () => {
+      if (document.getElementById('ext-return-tracking-banner')) return;
+      const rma = extractReturnRma();
+      const toolbar = findReturnLabelToolbar();
+      if (!rma || !toolbar) return;
+      renderReturnTrackingBanner(toolbar, rma);
+    };
+
+    attachIfReady();
+    setInterval(attachIfReady, 1500);
+  }
+
+  function extractReturnRma() {
+    const preferredImages = Array.from(document.querySelectorAll('img')).filter(image => {
+      const alt = normalizeReturnText(image.getAttribute('alt'));
+      return alt.includes('return authorisation label')
+        || alt.includes('return authorization label')
+        || alt.includes('commercial invoice');
+    });
+
+    for (const image of preferredImages) {
+      for (const attribute of ['src', 'data-main-source', 'data-shadow-source']) {
+        const value = image.getAttribute(attribute) || '';
+        const match = decodeURIComponent(value).match(/\/([a-z0-9_-]*rma)\.(?:gif|png)(?:[?#]|$)/i);
+        if (match) return match[1];
+      }
+    }
+    return null;
+  }
+
+  function findReturnLabelToolbar() {
+    const printButton = document.getElementById('print-label-button-browser-announce');
+    if (!printButton) return null;
+    const printControl = printButton.closest('.a-button') || printButton;
+    const parent = printControl.parentElement;
+    if (!parent) return null;
+    const emailControl = Array.from(parent.children).find(element =>
+      normalizeReturnText(element.textContent).includes('mail to a friend to print')
+    );
+    return { parent, anchor: emailControl || printControl };
+  }
+
+  function renderReturnTrackingBanner(toolbar, rma) {
+    const banner = document.createElement('span');
+    banner.id = 'ext-return-tracking-banner';
+    banner.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-left:14px;padding:7px 12px;' +
+      'border:1px solid #007185;border-radius:8px;background:#f0f8ff;color:#0f1111;' +
+      'font:600 13px Arial,sans-serif;vertical-align:middle;max-width:520px';
+
+    const text = document.createElement('span');
+    text.id = 'ext-return-tracking-text';
+    text.textContent = `RMA ${rma} — loading tracking...`;
+
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = 'Retry';
+    retry.style.cssText = 'display:none;border:0;background:none;color:#007185;text-decoration:underline;' +
+      'cursor:pointer;padding:0;font:inherit';
+    retry.addEventListener('click', () => loadReturnTracking(rma, text, retry));
+
+    banner.appendChild(text);
+    banner.appendChild(retry);
+    toolbar.anchor.insertAdjacentElement('afterend', banner);
+    loadReturnTracking(rma, text, retry);
+  }
+
+  async function loadReturnTracking(rma, textElement, retryButton) {
+    textElement.textContent = `RMA ${rma} — loading tracking...`;
+    retryButton.style.display = 'none';
+
+    try {
+      const response = await fetch(`/spr/returns/track/${encodeURIComponent(rma)}`, {
+        credentials: 'include',
+        redirect: 'follow',
+        cache: 'no-store'
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const html = await response.text();
+      const trackingNumber = extractTrackingNumberFromHtml(html, rma);
+      if (!trackingNumber) {
+        const unavailable = response.url.includes('/spr/returns/sorry')
+          || /tracking_info_unavailable|tracking information (?:is )?unavailable|we[’']re sorry/i.test(html);
+        textElement.textContent = unavailable
+          ? `RMA ${rma} — tracking unavailable`
+          : `RMA ${rma} — tracking number not found`;
+        retryButton.style.display = 'inline';
+        return;
+      }
+      textElement.textContent = `RMA ${rma} — Tracking ${trackingNumber}`;
+    } catch (error) {
+      console.warn('[ReturnTracking] Could not load tracking:', error);
+      textElement.textContent = `RMA ${rma} — tracking unavailable`;
+      retryButton.style.display = 'inline';
+    }
+  }
+
+  function extractTrackingNumberFromHtml(html, rma = '') {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const explicit = doc.querySelector('[data-tracking-number]')?.getAttribute('data-tracking-number')
+      || doc.querySelector('input[name*="tracking" i], input[id*="tracking" i]')?.value;
+    if (explicit && normalizeTrackingCandidate(explicit, rma)) return normalizeTrackingCandidate(explicit, rma);
+
+    const text = (doc.body?.textContent || '').replace(/\s+/g, ' ');
+    const labelledPatterns = [
+      /carrier\s+tracking\s+(?:number|id)\s*[:#-]?\s*([a-z0-9-]{8,30})/i,
+      /tracking\s+(?:number|id)\s*[:#-]?\s*([a-z0-9-]{8,30})/i
+    ];
+    for (const pattern of labelledPatterns) {
+      const candidate = normalizeTrackingCandidate(text.match(pattern)?.[1], rma);
+      if (candidate) return candidate;
+    }
+
+    const sourcePatterns = [
+      /["'](?:carrier)?tracking(?:number|id)["']\s*:\s*["']([a-z0-9-]{8,30})["']/i,
+      /\b([a-z]{2}\d{9}[a-z]{2})\b/i,
+      /\b(1z[a-z0-9]{16})\b/i
+    ];
+    for (const pattern of sourcePatterns) {
+      const candidate = normalizeTrackingCandidate(html.match(pattern)?.[1], rma);
+      if (candidate) return candidate;
+    }
+    return null;
+  }
+
+  function normalizeTrackingCandidate(value, rma = '') {
+    const candidate = String(value || '').trim().replace(/[^a-z0-9-]/gi, '');
+    if (candidate.length < 8 || candidate.toLowerCase() === String(rma).toLowerCase()) return null;
+    return candidate.toUpperCase();
   }
 
   // ========== RETURNS TEST WORKFLOW ==========
@@ -540,12 +716,12 @@
     const reasonSelect = findReasonSelect();
     if (!heading || !reasonSelect) return;
 
-    const btn = createButton('ext-return-workflow-btn', 'RUN RETURN TEST');
+    const btn = createButton('ext-return-workflow-btn', 'START RETURN');
     btn.style.marginLeft = '18px';
     btn.addEventListener('click', event => {
       event.preventDefault();
       if (readReturnWorkflowState()) return;
-      setReturnWorkflowStatus('Starting return test...');
+      setReturnWorkflowStatus('Starting return...');
       saveReturnWorkflowState('reason');
     });
     heading.appendChild(btn);
@@ -581,7 +757,7 @@
     if (!state) return;
 
     if (isReturnStopPage()) {
-      showReturnStopNotice();
+      console.log('[ReturnWorkflow] Stopped before collection address / final confirmation.');
       clearReturnWorkflowState();
       return;
     }
@@ -660,17 +836,6 @@
       || bodyText.includes('confirm your return');
   }
 
-  function showReturnStopNotice() {
-    if (document.getElementById('ext-return-stop-notice')) return;
-    const notice = document.createElement('div');
-    notice.id = 'ext-return-stop-notice';
-    notice.textContent = 'RETURN TEST STOPPED — choose the collection address and continue manually.';
-    notice.style.cssText = 'position:fixed;top:12px;right:12px;z-index:9999999;background:#fff3cd;' +
-      'color:#664d03;border:2px solid #ffca2c;border-radius:8px;padding:12px 16px;' +
-      'font:bold 14px sans-serif;box-shadow:0 3px 12px rgba(0,0,0,.25);max-width:420px';
-    document.body.appendChild(notice);
-    console.log('[ReturnWorkflow] Stopped before collection address / final confirmation.');
-  }
 
   // ========== CHAT QUICK REPLIES FLOW ==========
   function initChatQuickReplies() {
@@ -996,26 +1161,31 @@
 
   function setCountry(countryCode, countryText) {
     const nativeSelect = document.getElementById('address-ui-widgets-countryCode-dropdown-nativeId');
-    if (!nativeSelect) return;
-    if (nativeSelect.value === countryCode) return;
+    if (!nativeSelect || nativeSelect.value === countryCode) return;
 
     nativeSelect.value = countryCode;
+    nativeSelect.dispatchEvent(new Event('input', { bubbles: true }));
     nativeSelect.dispatchEvent(new Event('change', { bubbles: true }));
 
-    // Click through custom dropdown
+    // Fallback for Amazon's custom dropdown. Prefer the locale-independent value.
     const dropdownButton = document.querySelector('[id*="countryCode"] .a-button-text, [id*="countryCode"] .a-dropdown-prompt');
-    if (dropdownButton) {
-      dropdownButton.click();
-      setTimeout(() => {
-        const items = document.querySelectorAll('.a-popover-inner li, .a-popover li, [id*="countryCode"] li');
-        for (const item of items) {
-          if (item.textContent.trim().includes(countryText || countryCode)) {
-            item.click();
-            break;
-          }
-        }
-      }, 300);
-    }
+    if (!dropdownButton) return;
+    dropdownButton.click();
+    setTimeout(() => {
+      const items = Array.from(document.querySelectorAll('.a-popover-inner li, .a-popover li, [id*="countryCode"] li'));
+      const byValue = items.find(item =>
+        item.getAttribute('data-value') === countryCode
+        || item.querySelector(`[data-value="${countryCode}"]`)
+        || item.querySelector(`a[id$="_${countryCode}"]`)
+      );
+      const aliases = countryCode === 'DE'
+        ? ['germany', 'deutschland']
+        : countryCode === 'GB'
+          ? ['united kingdom', 'vereinigtes königreich', 'großbritannien']
+          : [String(countryText || countryCode).toLowerCase()];
+      const byText = items.find(item => aliases.some(alias => normalizeReturnText(item.textContent).includes(alias)));
+      (byValue || byText)?.click();
+    }, 300);
   }
 
   function clickAddressSubmit() {
