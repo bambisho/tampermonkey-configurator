@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      13.5
-// @description  Amazon UK/DE address tools, test-mode return workflow, chat replies, and Delta scenario autofill
+// @version      13.6
+// @description  Amazon UK/DE address tools, return workflow, label tracking OCR, chat replies, and Delta autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
 // @match        https://delta.alliance.codes/*
-// @match        *://*/*
+// @require      https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js
 // @run-at       document-idle
 // @grant        none
 // @updateURL    https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/scripts/amazon-suite.user.js
@@ -469,6 +469,7 @@
     textElement.textContent = `RMA ${rma} — loading tracking...`;
     retryButton.style.display = 'none';
 
+    let trackingNumber = null;
     try {
       const response = await fetch(`/spr/returns/track/${encodeURIComponent(rma)}`, {
         credentials: 'include',
@@ -477,22 +478,27 @@
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const html = await response.text();
-      const trackingNumber = extractTrackingNumberFromHtml(html, rma);
-      if (!trackingNumber) {
-        const unavailable = response.url.includes('/spr/returns/sorry')
-          || /tracking_info_unavailable|tracking information (?:is )?unavailable|we[’']re sorry/i.test(html);
-        textElement.textContent = unavailable
-          ? `RMA ${rma} — tracking unavailable`
-          : `RMA ${rma} — tracking number not found`;
-        retryButton.style.display = 'inline';
-        return;
-      }
-      textElement.textContent = `RMA ${rma} — Tracking ${trackingNumber}`;
+      trackingNumber = extractTrackingNumberFromHtml(html, rma);
     } catch (error) {
-      console.warn('[ReturnTracking] Could not load tracking:', error);
-      textElement.textContent = `RMA ${rma} — tracking unavailable`;
-      retryButton.style.display = 'inline';
+      console.warn('[ReturnTracking] Tracking page lookup failed:', error);
     }
+
+    if (!trackingNumber) {
+      try {
+        trackingNumber = await extractTrackingFromReturnLabelImages(rma, status => {
+          textElement.textContent = `RMA ${rma} — ${status}`;
+        });
+      } catch (error) {
+        console.warn('[ReturnTracking] Label scan failed:', error);
+      }
+    }
+
+    if (trackingNumber) {
+      textElement.textContent = `RMA ${rma} — Tracking ${trackingNumber}`;
+      return;
+    }
+    textElement.textContent = `RMA ${rma} — tracking unavailable`;
+    retryButton.style.display = 'inline';
   }
 
   function extractTrackingNumberFromHtml(html, rma = '') {
@@ -527,6 +533,259 @@
     const candidate = String(value || '').trim().replace(/[^a-z0-9-]/gi, '');
     if (candidate.length < 8 || candidate.toLowerCase() === String(rma).toLowerCase()) return null;
     return candidate.toUpperCase();
+  }
+
+  function extractPostalTrackingCandidate(value, rma = '') {
+    const text = String(value || '').toUpperCase();
+    const slices = [];
+    const separator = '[\\s._:/-]*';
+    const digitLike = '[0-9OILSBZ]';
+    const directPattern = new RegExp(`(?:^|[^A-Z0-9])([A-Z01]{2}${separator}${digitLike}(?:${separator}${digitLike}){8}${separator}[A-Z01]{2})(?=$|[^A-Z0-9])`, 'g');
+    const missingCPattern = new RegExp(`(?:^|[^A-Z0-9])(H${separator}${digitLike}(?:${separator}${digitLike}){8}${separator}[A-Z01]{2})(?=$|[^A-Z0-9])`, 'g');
+    for (const match of text.matchAll(directPattern)) slices.push(match[1]);
+    for (const match of text.matchAll(missingCPattern)) slices.push(`C${match[1]}`);
+
+    const runs = text.match(/[A-Z0-9](?:[\s._:/-]*[A-Z0-9]){10,24}/g) || [];
+    for (const run of runs) {
+      const compact = run.replace(/[^A-Z0-9]/g, '');
+      for (let start = 0; start <= compact.length - 13; start++) slices.push(compact.slice(start, start + 13));
+      for (let start = 0; start <= compact.length - 12; start++) {
+        const shortSlice = compact.slice(start, start + 12);
+        if (/^H[0-9OILSBZ]{9}[A-Z01]{2}$/.test(shortSlice)) slices.push(`C${shortSlice}`);
+      }
+    }
+
+    let fallback = null;
+    for (const rawSlice of slices) {
+      const slice = rawSlice.replace(/[^A-Z0-9]/g, '');
+      if (!/^[A-Z01]{2}[0-9OILSBZ]{9}[A-Z01]{2}$/.test(slice)) continue;
+      const prefix = slice.slice(0, 2).replace(/0/g, 'O').replace(/1/g, 'I');
+      const digits = slice.slice(2, 11)
+        .replace(/[OQ]/g, '0')
+        .replace(/[IL]/g, '1')
+        .replace(/Z/g, '2')
+        .replace(/S/g, '5')
+        .replace(/B/g, '8');
+      const suffix = slice.slice(11).replace(/0/g, 'O').replace(/1/g, 'I');
+      const candidate = normalizeTrackingCandidate(`${prefix}${digits}${suffix}`, rma);
+      if (!candidate || !/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(candidate)) continue;
+      if (isValidS10TrackingNumber(candidate)) return candidate;
+      fallback ||= candidate;
+    }
+    return fallback;
+  }
+
+  function isValidS10TrackingNumber(value) {
+    const match = String(value || '').toUpperCase().match(/^[A-Z]{2}(\d{8})(\d)[A-Z]{2}$/);
+    if (!match) return false;
+    const weights = [8, 6, 4, 2, 3, 5, 9, 7];
+    const sum = match[1].split('').reduce((total, digit, index) => total + Number(digit) * weights[index], 0);
+    let expected = 11 - (sum % 11);
+    if (expected === 10) expected = 0;
+    else if (expected === 11) expected = 5;
+    return expected === Number(match[2]);
+  }
+
+  function findReturnLabelTrackingImages() {
+    const images = Array.from(document.querySelectorAll('img')).filter(image => {
+      const alt = normalizeReturnText(image.getAttribute('alt'));
+      return alt.includes('return mailing label') || alt.includes('commercial invoice');
+    });
+    return images.sort((a, b) => {
+      const aMailing = normalizeReturnText(a.getAttribute('alt')).includes('return mailing label');
+      const bMailing = normalizeReturnText(b.getAttribute('alt')).includes('return mailing label');
+      return Number(bMailing) - Number(aMailing);
+    });
+  }
+
+  async function waitForReturnLabelImage(image, timeoutMs = 10000) {
+    if (image.complete && image.naturalWidth > 0) return image;
+    return new Promise(resolve => {
+      const timeout = setTimeout(() => resolve(null), timeoutMs);
+      const done = result => {
+        clearTimeout(timeout);
+        resolve(result);
+      };
+      image.addEventListener('load', () => done(image), { once: true });
+      image.addEventListener('error', () => done(null), { once: true });
+    });
+  }
+
+  async function decodeTrackingFromBarcodes(images, rma = '') {
+    if (!('BarcodeDetector' in globalThis)) return null;
+    try {
+      const supported = typeof BarcodeDetector.getSupportedFormats === 'function'
+        ? await BarcodeDetector.getSupportedFormats()
+        : [];
+      const preferred = ['code_128', 'code_39', 'codabar', 'itf', 'data_matrix', 'qr_code'];
+      const formats = preferred.filter(format => !supported.length || supported.includes(format));
+      const detector = new BarcodeDetector(formats.length ? { formats } : undefined);
+      for (const image of images) {
+        if (!await waitForReturnLabelImage(image)) continue;
+        const results = await detector.detect(image);
+        for (const result of results) {
+          const candidate = extractPostalTrackingCandidate(result.rawValue, rma)
+            || normalizeTrackingCandidate(result.rawValue, rma);
+          if (candidate && /^[A-Z]{2}\d{9}[A-Z]{2}$/.test(candidate)) return candidate;
+        }
+      }
+    } catch (error) {
+      console.warn('[ReturnTracking] Barcode decoding failed:', error);
+    }
+    return null;
+  }
+
+  let returnTesseractLoadPromise = null;
+  async function loadReturnTesseract() {
+    if (globalThis.Tesseract?.createWorker) return globalThis.Tesseract;
+    if (returnTesseractLoadPromise) return returnTesseractLoadPromise;
+
+    const sources = [
+      'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js',
+      'https://unpkg.com/tesseract.js@5/dist/tesseract.min.js'
+    ];
+    returnTesseractLoadPromise = (async () => {
+      for (const source of sources) {
+        try {
+          await new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            const timeout = setTimeout(() => {
+              script.remove();
+              reject(new Error('OCR library load timed out'));
+            }, 20000);
+            script.src = source;
+            script.async = true;
+            script.crossOrigin = 'anonymous';
+            script.onload = () => {
+              clearTimeout(timeout);
+              resolve();
+            };
+            script.onerror = () => {
+              clearTimeout(timeout);
+              script.remove();
+              reject(new Error('OCR library was blocked'));
+            };
+            (document.head || document.documentElement).appendChild(script);
+          });
+          if (globalThis.Tesseract?.createWorker) return globalThis.Tesseract;
+        } catch (error) {
+          console.warn('[ReturnTracking] OCR source failed:', source, error);
+        }
+      }
+      throw new Error('OCR library unavailable');
+    })();
+    return returnTesseractLoadPromise;
+  }
+
+  function createTrackingOcrCanvas(image, variant) {
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    if (!sourceWidth || !sourceHeight) return null;
+
+    const isInvoice = normalizeReturnText(image.getAttribute('alt')).includes('commercial invoice');
+    let sx = 0;
+    let sy = 0;
+    let sw = sourceWidth;
+    let sh = sourceHeight;
+    let rotation = 0;
+    if (isInvoice && variant === 'tracking-field') {
+      sx = Math.floor(sourceWidth * 0.46);
+      sy = Math.floor(sourceHeight * 0.322);
+      sw = Math.floor(sourceWidth * 0.44);
+      sh = Math.floor(sourceHeight * 0.055);
+    } else if (isInvoice && variant === 'focus') {
+      sx = Math.floor(sourceWidth * 0.42);
+      sy = Math.floor(sourceHeight * 0.25);
+      sw = Math.floor(sourceWidth * 0.55);
+      sh = Math.floor(sourceHeight * 0.18);
+    } else if (!isInvoice && variant === 'rotate-right') {
+      rotation = Math.PI / 2;
+    } else if (!isInvoice && variant === 'rotate-left') {
+      rotation = -Math.PI / 2;
+    }
+
+    const scale = isInvoice && variant === 'tracking-field' ? 8 : isInvoice ? 3 : 1.6;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round((rotation ? sh : sw) * scale));
+    canvas.height = Math.max(1, Math.round((rotation ? sw : sh) * scale));
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return null;
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    context.save();
+    if (rotation > 0) {
+      context.translate(canvas.width, 0);
+      context.rotate(rotation);
+    } else if (rotation < 0) {
+      context.translate(0, canvas.height);
+      context.rotate(rotation);
+    }
+    context.drawImage(image, sx, sy, sw, sh, 0, 0, sw * scale, sh * scale);
+    context.restore();
+
+    try {
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+      for (let index = 0; index < pixels.data.length; index += 4) {
+        const luminance = 0.299 * pixels.data[index] + 0.587 * pixels.data[index + 1] + 0.114 * pixels.data[index + 2];
+        const value = luminance > 235 ? 255 : Math.max(0, Math.min(255, (luminance - 128) * 1.8 + 128));
+        pixels.data[index] = value;
+        pixels.data[index + 1] = value;
+        pixels.data[index + 2] = value;
+      }
+      context.putImageData(pixels, 0, 0);
+    } catch (error) {
+      console.warn('[ReturnTracking] Could not preprocess OCR canvas:', error);
+    }
+    return canvas;
+  }
+
+  async function decodeTrackingWithOcr(images, rma = '', onStatus = () => {}) {
+    const Tesseract = await loadReturnTesseract();
+    const worker = await Tesseract.createWorker('eng', 1, {
+      logger: message => {
+        if (message.status === 'recognizing text') {
+          onStatus(`OCR ${Math.round((message.progress || 0) * 100)}%`);
+        }
+      }
+    });
+    try {
+      await worker.setParameters({
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -',
+        preserve_interword_spaces: '1',
+        tessedit_pageseg_mode: '6'
+      });
+      const variants = [];
+      for (const image of images) {
+        if (!await waitForReturnLabelImage(image)) continue;
+        const isInvoice = normalizeReturnText(image.getAttribute('alt')).includes('commercial invoice');
+        const names = isInvoice ? ['tracking-field', 'focus'] : ['rotate-right', 'rotate-left'];
+        for (const name of names) {
+          const canvas = createTrackingOcrCanvas(image, name);
+          if (canvas) variants.push(canvas);
+        }
+      }
+      for (let index = 0; index < variants.length; index++) {
+        onStatus(`OCR image ${index + 1}/${variants.length}`);
+        const result = await worker.recognize(variants[index]);
+        const candidate = extractPostalTrackingCandidate(result.data?.text, rma);
+        if (candidate) return candidate;
+      }
+      return null;
+    } finally {
+      await worker.terminate();
+    }
+  }
+
+  async function extractTrackingFromReturnLabelImages(rma = '', onStatus = () => {}) {
+    const images = findReturnLabelTrackingImages();
+    if (!images.length) return null;
+    onStatus('scanning label barcode...');
+    const barcode = await decodeTrackingFromBarcodes(images, rma);
+    if (barcode) return barcode;
+    onStatus('loading local OCR...');
+    return decodeTrackingWithOcr(images, rma, onStatus);
   }
 
   // ========== RETURNS TEST WORKFLOW ==========
