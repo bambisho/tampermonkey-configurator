@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      13.2
+// @version      13.3
 // @description  Amazon UK/DE address tools, test-mode return workflow, chat replies, and Delta scenario autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -304,34 +304,56 @@
 
   // ========== ORDERS PAGE RETURN LAUNCHERS ==========
   function initOrderReturnLaunchers() {
-    const attachLaunchers = () => {
-      const path = window.location.pathname;
-      if (!/\/your-orders|\/order-history|\/order-details/i.test(path)) return;
+    attachOrderReturnLaunchers();
+    setInterval(attachOrderReturnLaunchers, 1500);
+  }
 
-      const returnLinks = Array.from(document.querySelectorAll('a[href]')).filter(link => {
-        const href = link.getAttribute('href') || '';
-        const text = normalizeReturnText(link.textContent || link.closest('.a-button')?.textContent);
-        const returnHref = /\/spr\/returns\/(?:cart|start|order)/i.test(href)
-          || /\/returns\/cart/i.test(href);
-        const returnLabel = text.includes('return items')
-          || text.includes('return item')
-          || text.includes('artikel zurück')
-          || text.includes('artikel zurucksenden');
-        return returnHref && (returnLabel || href.includes('/spr/returns/cart'));
-      });
+  function attachOrderReturnLaunchers() {
+    const path = window.location.pathname;
+    if (!/\/your-orders|\/order-history|\/order-details/i.test(path)) return;
+    cleanupDuplicateOrderReturnLaunchers();
 
-      for (const returnLink of returnLinks) injectOrderReturnLauncher(returnLink);
-    };
+    const returnLinks = Array.from(document.querySelectorAll('a[href]')).filter(link => {
+      if (link.classList.contains('ext-order-return-launcher')) return false;
+      const href = link.getAttribute('href') || '';
+      const text = normalizeReturnText(link.textContent || link.closest('.a-button')?.textContent);
+      const returnHref = /\/spr\/returns\/(?:cart|start|order)/i.test(href)
+        || /\/returns\/cart/i.test(href);
+      const returnLabel = text.includes('return items')
+        || text.includes('return item')
+        || text.includes('artikel zurück')
+        || text.includes('artikel zurucksenden');
+      return returnHref && (returnLabel || href.includes('/spr/returns/cart'));
+    });
 
-    attachLaunchers();
-    setInterval(attachLaunchers, 1500);
+    for (const returnLink of returnLinks) injectOrderReturnLauncher(returnLink);
+  }
+
+  function cleanupDuplicateOrderReturnLaunchers() {
+    const launchersByParent = new Map();
+    for (const launcher of document.querySelectorAll('.ext-order-return-launcher')) {
+      const parent = launcher.parentElement;
+      if (!parent) continue;
+      if (launchersByParent.has(parent)) launcher.remove();
+      else launchersByParent.set(parent, launcher);
+    }
   }
 
   function injectOrderReturnLauncher(returnLink) {
-    if (returnLink.dataset.extReturnLauncherAttached === 'true') return;
+    if (!returnLink || returnLink.classList.contains('ext-order-return-launcher')) return;
     const returnControl = returnLink.closest('.a-button') || returnLink;
     const parent = returnControl.parentElement;
     if (!parent) return;
+
+    const existingLauncher = Array.from(parent.children).find(child =>
+      child.classList?.contains('ext-order-return-launcher')
+    );
+    if (existingLauncher) {
+      existingLauncher.href = returnLink.href;
+      returnLink.dataset.extReturnLauncherAttached = 'true';
+      return;
+    }
+    if (returnLink.dataset.extReturnLauncherAttached === 'true') return;
 
     const launcher = document.createElement('a');
     launcher.className = 'ext-order-return-launcher';
