@@ -1,14 +1,17 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      13.6
-// @description  Amazon UK/DE address tools, return workflow, label tracking OCR, chat replies, and Delta autofill
+// @version      13.7
+// @description  Amazon UK/DE address tools, return workflow, label/prep tracking, chat replies, and Delta autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
 // @match        https://delta.alliance.codes/*
 // @require      https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js
+// @require      https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setClipboard
+// @connect      trans-qrcode-images-eu.s3.eu-west-1.amazonaws.com
 // @updateURL    https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/scripts/amazon-suite.user.js
 // @downloadURL  https://raw.githubusercontent.com/bambisho/tampermonkey-configurator/master/scripts/amazon-suite.user.js
 // ==/UserScript==
@@ -397,14 +400,18 @@
 
   // ========== RETURN LABEL TRACKING BANNER ==========
   function initReturnLabelTrackingBanner() {
-    if (!window.location.pathname.includes('/spr/returns/label/')) return;
+    const path = window.location.pathname;
+    const pageType = path.includes('/spr/returns/prep') ? 'prep'
+      : path.includes('/spr/returns/label/') ? 'label'
+        : null;
+    if (!pageType) return;
 
     const attachIfReady = () => {
       if (document.getElementById('ext-return-tracking-banner')) return;
       const rma = extractReturnRma();
-      const toolbar = findReturnLabelToolbar();
-      if (!rma || !toolbar) return;
-      renderReturnTrackingBanner(toolbar, rma);
+      const anchor = pageType === 'prep' ? findPrepReturnBannerAnchor(rma) : findReturnLabelToolbar();
+      if (!rma || !anchor) return;
+      renderReturnTrackingBanner(anchor, rma, pageType);
     };
 
     attachIfReady();
@@ -412,6 +419,9 @@
   }
 
   function extractReturnRma() {
+    const queryRma = new URL(window.location.href).searchParams.get('rmaId');
+    if (queryRma && /rma$/i.test(queryRma)) return queryRma;
+
     const preferredImages = Array.from(document.querySelectorAll('img')).filter(image => {
       const alt = normalizeReturnText(image.getAttribute('alt'));
       return alt.includes('return authorisation label')
@@ -441,12 +451,28 @@
     return { parent, anchor: emailControl || printControl };
   }
 
-  function renderReturnTrackingBanner(toolbar, rma) {
+  function findPrepReturnBannerAnchor(rma) {
+    const triggers = Array.from(document.querySelectorAll('[data-action="return-item-images"]'));
+    const trigger = triggers.find(element => {
+      const data = element.getAttribute('data-return-item-images') || '';
+      return !rma || data.includes(rma);
+    }) || triggers[0];
+    if (!trigger) return null;
+    return { parent: trigger.parentElement, anchor: trigger };
+  }
+
+  function renderReturnTrackingBanner(toolbar, rma, pageType = 'label') {
     const banner = document.createElement('span');
     banner.id = 'ext-return-tracking-banner';
+    banner.dataset.pageType = pageType;
     banner.style.cssText = 'display:inline-flex;align-items:center;gap:8px;margin-left:14px;padding:7px 12px;' +
       'border:1px solid #007185;border-radius:8px;background:#f0f8ff;color:#0f1111;' +
       'font:600 13px Arial,sans-serif;vertical-align:middle;max-width:520px';
+    if (pageType === 'prep') {
+      banner.style.marginLeft = '10px';
+      banner.style.marginTop = '4px';
+      banner.style.maxWidth = '240px';
+    }
 
     const text = document.createElement('span');
     text.id = 'ext-return-tracking-text';
@@ -457,48 +483,142 @@
     retry.textContent = 'Retry';
     retry.style.cssText = 'display:none;border:0;background:none;color:#007185;text-decoration:underline;' +
       'cursor:pointer;padding:0;font:inherit';
-    retry.addEventListener('click', () => loadReturnTracking(rma, text, retry));
+    retry.addEventListener('click', event => {
+      event.stopPropagation();
+      loadReturnTracking(rma, text, retry, pageType);
+    });
+    banner.addEventListener('click', () => copyReturnTrackingNumber(banner));
+    banner.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      copyReturnTrackingNumber(banner);
+    });
 
     banner.appendChild(text);
     banner.appendChild(retry);
     toolbar.anchor.insertAdjacentElement('afterend', banner);
-    loadReturnTracking(rma, text, retry);
+    loadReturnTracking(rma, text, retry, pageType);
   }
 
-  async function loadReturnTracking(rma, textElement, retryButton) {
-    textElement.textContent = `RMA ${rma} — loading tracking...`;
+  async function loadReturnTracking(rma, textElement, retryButton, pageType = 'label') {
+    const banner = textElement.parentElement;
+    clearReturnTrackingCopyState(banner);
+    textElement.textContent = 'Loading tracking...';
     retryButton.style.display = 'none';
 
     let trackingNumber = null;
-    try {
-      const response = await fetch(`/spr/returns/track/${encodeURIComponent(rma)}`, {
-        credentials: 'include',
-        redirect: 'follow',
-        cache: 'no-store'
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const html = await response.text();
-      trackingNumber = extractTrackingNumberFromHtml(html, rma);
-    } catch (error) {
-      console.warn('[ReturnTracking] Tracking page lookup failed:', error);
-    }
-
-    if (!trackingNumber) {
+    if (pageType === 'prep') {
       try {
-        trackingNumber = await extractTrackingFromReturnLabelImages(rma, status => {
-          textElement.textContent = `RMA ${rma} — ${status}`;
+        trackingNumber = await extractTrackingFromPrepReturnQr(rma, status => {
+          textElement.textContent = status;
         });
       } catch (error) {
-        console.warn('[ReturnTracking] Label scan failed:', error);
+        console.warn('[ReturnTracking] Prep QR scan failed:', error);
+      }
+    } else {
+      try {
+        const response = await fetch(`/spr/returns/track/${encodeURIComponent(rma)}`, {
+          credentials: 'include',
+          redirect: 'follow',
+          cache: 'no-store'
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const html = await response.text();
+        trackingNumber = extractTrackingNumberFromHtml(html, rma);
+      } catch (error) {
+        console.warn('[ReturnTracking] Tracking page lookup failed:', error);
+      }
+
+      if (!trackingNumber) {
+        try {
+          trackingNumber = await extractTrackingFromReturnLabelImages(rma, status => {
+            textElement.textContent = status;
+          });
+        } catch (error) {
+          console.warn('[ReturnTracking] Label scan failed:', error);
+        }
       }
     }
 
     if (trackingNumber) {
-      textElement.textContent = `RMA ${rma} — Tracking ${trackingNumber}`;
+      textElement.textContent = trackingNumber;
+      setReturnTrackingCopyState(banner, trackingNumber);
       return;
     }
-    textElement.textContent = `RMA ${rma} — tracking unavailable`;
+    textElement.textContent = 'Tracking unavailable';
     retryButton.style.display = 'inline';
+  }
+
+  function setReturnTrackingCopyState(banner, trackingNumber) {
+    if (!banner) return;
+    banner.dataset.trackingNumber = trackingNumber;
+    banner.tabIndex = 0;
+    banner.setAttribute('role', 'button');
+    banner.setAttribute('aria-label', `Copy tracking number ${trackingNumber}`);
+    banner.title = 'Click to copy tracking number';
+    banner.style.cursor = 'pointer';
+    banner.style.userSelect = 'all';
+  }
+
+  function clearReturnTrackingCopyState(banner) {
+    if (!banner) return;
+    delete banner.dataset.trackingNumber;
+    banner.removeAttribute('tabindex');
+    banner.removeAttribute('role');
+    banner.removeAttribute('aria-label');
+    banner.removeAttribute('title');
+    banner.style.cursor = 'default';
+    banner.style.userSelect = 'none';
+    banner.style.background = '#f0f8ff';
+    banner.style.borderColor = '#007185';
+  }
+
+  async function copyReturnTrackingNumber(banner) {
+    const trackingNumber = banner?.dataset?.trackingNumber;
+    if (!trackingNumber) return false;
+    let copied = false;
+    try {
+      if (typeof GM_setClipboard === 'function') {
+        GM_setClipboard(trackingNumber, 'text');
+        copied = true;
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(trackingNumber);
+        copied = true;
+      }
+    } catch (error) {
+      console.warn('[ReturnTracking] Clipboard API failed:', error);
+    }
+    if (!copied) copied = fallbackCopyReturnTrackingNumber(trackingNumber);
+    if (!copied) return false;
+
+    banner.style.background = '#d5f5e3';
+    banner.style.borderColor = '#067d62';
+    banner.title = 'Copied to clipboard';
+    setTimeout(() => {
+      if (banner.dataset.trackingNumber !== trackingNumber) return;
+      banner.style.background = '#f0f8ff';
+      banner.style.borderColor = '#007185';
+      banner.title = 'Click to copy tracking number';
+    }, 900);
+    return true;
+  }
+
+  function fallbackCopyReturnTrackingNumber(trackingNumber) {
+    const field = document.createElement('textarea');
+    field.value = trackingNumber;
+    field.setAttribute('readonly', '');
+    field.style.cssText = 'position:fixed;left:-9999px;top:-9999px';
+    document.body.appendChild(field);
+    field.select();
+    field.setSelectionRange(0, field.value.length);
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch (error) {
+      console.warn('[ReturnTracking] Clipboard fallback failed:', error);
+    }
+    field.remove();
+    return copied;
   }
 
   function extractTrackingNumberFromHtml(html, rma = '') {
@@ -786,6 +906,70 @@
     if (barcode) return barcode;
     onStatus('loading local OCR...');
     return decodeTrackingWithOcr(images, rma, onStatus);
+  }
+
+  function findPrepReturnCodeImage(rma = '') {
+    const containers = Array.from(document.querySelectorAll('.return-code-details'));
+    const container = containers.find(element => !rma || element.getAttribute('data-association-id') === rma)
+      || containers[0];
+    return container?.querySelector('img.label-image') || null;
+  }
+
+  async function extractTrackingFromPrepReturnQr(rma = '', onStatus = () => {}) {
+    const image = findPrepReturnCodeImage(rma);
+    if (!image) return null;
+    onStatus('Scanning return QR...');
+    const nativeResult = await decodeTrackingFromBarcodes([image], rma);
+    if (nativeResult) return nativeResult;
+    onStatus('Decoding return QR...');
+    return decodeTrackingWithJsQr(image, rma);
+  }
+
+  async function decodeTrackingWithJsQr(image, rma = '') {
+    if (typeof jsQR !== 'function') throw new Error('QR decoder unavailable');
+    const bytes = await loadReturnQrImageBytes(image.currentSrc || image.src);
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const localImage = await new Promise((resolve, reject) => {
+        const element = new Image();
+        element.onload = () => resolve(element);
+        element.onerror = () => reject(new Error('QR image could not be loaded'));
+        element.src = objectUrl;
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = localImage.naturalWidth || localImage.width;
+      canvas.height = localImage.naturalHeight || localImage.height;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) return null;
+      context.drawImage(localImage, 0, 0);
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+      const result = jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: 'attemptBoth' });
+      return extractPostalTrackingCandidate(result?.data, rma);
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  async function loadReturnQrImageBytes(url) {
+    if (typeof GM_xmlhttpRequest === 'function') {
+      return new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url,
+          responseType: 'arraybuffer',
+          onload: response => response.status >= 200 && response.status < 300
+            ? resolve(response.response)
+            : reject(new Error(`QR image HTTP ${response.status}`)),
+          onerror: () => reject(new Error('QR image request failed')),
+          ontimeout: () => reject(new Error('QR image request timed out')),
+          timeout: 20000
+        });
+      });
+    }
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`QR image HTTP ${response.status}`);
+    return response.arrayBuffer();
   }
 
   // ========== RETURNS TEST WORKFLOW ==========
