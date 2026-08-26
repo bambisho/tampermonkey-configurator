@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      13.9
-// @description  Amazon UK/DE address tools, return workflow, label/prep tracking, chat replies, and Delta autofill
+// @version      14.0
+// @description  Amazon UK/DE address tools, return workflow, label/prep/confirmation tracking, chat replies, and Delta autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
 // @match        https://delta.alliance.codes/*
@@ -404,14 +404,17 @@
   function initReturnLabelTrackingBanner() {
     const path = window.location.pathname;
     const pageType = path.includes('/spr/returns/prep') ? 'prep'
-      : path.includes('/spr/returns/label/') ? 'label'
-        : null;
+      : path.includes('/spr/returns/confirmation/') ? 'confirmation'
+        : path.includes('/spr/returns/label/') ? 'label'
+          : null;
     if (!pageType) return;
 
     const attachIfReady = () => {
       if (document.getElementById('ext-return-tracking-banner')) return;
       const rma = extractReturnRma();
-      const anchor = pageType === 'prep' ? findPrepReturnBannerAnchor(rma) : findReturnLabelToolbar();
+      const anchor = pageType === 'prep' ? findPrepReturnBannerAnchor(rma)
+        : pageType === 'confirmation' ? findConfirmationReturnBannerAnchor()
+          : findReturnLabelToolbar();
       if (!rma || !anchor) return;
       renderReturnTrackingBanner(anchor, rma, pageType);
     };
@@ -423,6 +426,29 @@
   function extractReturnRma() {
     const queryRma = new URL(window.location.href).searchParams.get('rmaId');
     if (queryRma && /rma$/i.test(queryRma)) return queryRma;
+
+    const packagesState = Array.from(document.querySelectorAll('script[type="a-state"]')).find(script =>
+      (script.getAttribute('data-a-state') || '').includes('packagesEventData')
+    );
+    if (packagesState) {
+      try {
+        const packages = JSON.parse(packagesState.textContent || '{}');
+        const packageRma = Object.keys(packages).find(value => /rma$/i.test(value));
+        if (packageRma) return packageRma;
+      } catch (error) {
+        console.warn('[ReturnTracking] Could not parse confirmation package state:', error);
+      }
+    }
+
+    const associationRma = Array.from(document.querySelectorAll('[data-association-id]'))
+      .map(element => element.getAttribute('data-association-id') || '')
+      .find(value => /rma$/i.test(value));
+    if (associationRma) return associationRma;
+
+    const idRma = Array.from(document.querySelectorAll('[id*="RMA"], [id*="rma"]'))
+      .map(element => (element.id || '').match(/([a-z0-9_-]*rma)(?:-|$)/i)?.[1])
+      .find(Boolean);
+    if (idRma) return idRma;
 
     const preferredImages = Array.from(document.querySelectorAll('img')).filter(image => {
       const alt = normalizeReturnText(image.getAttribute('alt'));
@@ -463,6 +489,15 @@
     return { parent: trigger.parentElement, anchor: trigger };
   }
 
+  function findConfirmationReturnBannerAnchor() {
+    const continueElement = document.getElementById('-rex-call-to-action-button-continueShopping')
+      || document.querySelector('[data-event-type="continueShopping"]');
+    if (!continueElement) return null;
+    const control = continueElement.closest('.a-button') || continueElement;
+    const parent = control.parentElement;
+    return parent ? { parent, anchor: control } : null;
+  }
+
   function renderReturnTrackingBanner(toolbar, rma, pageType = 'label') {
     const banner = document.createElement('span');
     banner.id = 'ext-return-tracking-banner';
@@ -474,6 +509,13 @@
       banner.style.marginLeft = '10px';
       banner.style.marginTop = '4px';
       banner.style.maxWidth = '240px';
+    } else if (pageType === 'confirmation') {
+      banner.style.display = 'flex';
+      banner.style.justifyContent = 'center';
+      banner.style.boxSizing = 'border-box';
+      banner.style.margin = '10px 0 0';
+      banner.style.width = '100%';
+      banner.style.maxWidth = 'none';
     }
 
     const text = document.createElement('span');
@@ -509,13 +551,13 @@
     retryButton.style.display = 'none';
 
     let trackingNumber = null;
-    if (pageType === 'prep') {
+    if (pageType === 'prep' || pageType === 'confirmation') {
       try {
         trackingNumber = await extractTrackingFromPrepReturnQr(rma, status => {
           textElement.textContent = status;
         });
       } catch (error) {
-        console.warn('[ReturnTracking] Prep QR scan failed:', error);
+        console.warn(`[ReturnTracking] ${pageType} QR scan failed:`, error);
       }
     } else {
       try {
