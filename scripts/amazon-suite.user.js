@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      14.0
-// @description  Amazon UK/DE address tools, return workflow, label/prep/confirmation tracking, chat replies, and Delta autofill
+// @version      14.1
+// @description  Amazon UK/DE address tools, return workflow, prioritized return options, label/prep/confirmation tracking, chat replies, and Delta autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
 // @match        https://delta.alliance.codes/*
@@ -1475,6 +1475,13 @@
       return;
     }
 
+    // This action is the canonical support-interstitial transition. Handle it
+    // before any generic Continue search so Amazon cannot advance the wrong panel.
+    if (findShowAllReturnOptionsButton()) {
+      await runRefundMethodStep(state);
+      return;
+    }
+
     if (findReturnHeading('how can we make it right')) {
       await runRefundMethodStep(state);
       return;
@@ -1538,13 +1545,15 @@
   }
 
   function findShowAllReturnOptionsButton() {
-    const direct = document.querySelector('button[data-event-type="showAllReturnOptions"]');
-    if (isReturnControlEnabled(direct)) return direct;
-    return Array.from(document.querySelectorAll('button, input[type="submit"], a[role="button"]')).find(element =>
-      isReturnControlEnabled(element)
-      && normalizeReturnText(`${element.value || ''} ${element.textContent || ''} ${element.closest('.a-button')?.textContent || ''}`)
-        .includes('continue to return options')
-    ) || null;
+    const candidates = [
+      ...document.querySelectorAll('[data-event-type="showAllReturnOptions"]'),
+      ...document.querySelectorAll('button, input[type="submit"], a[role="button"], [role="button"]')
+    ];
+    return candidates.find(element => {
+      if (!isReturnControlEnabled(element)) return false;
+      const text = normalizeReturnText(`${element.value || ''} ${element.textContent || ''} ${element.closest('.a-button')?.textContent || ''}`);
+      return text.includes('continue to return options');
+    }) || null;
   }
 
   async function selectOriginalPaymentMethod() {
@@ -1573,6 +1582,12 @@
   }
 
   async function runRefundMethodStep(state) {
+    const showAllOptions = await waitForReturnElement(findShowAllReturnOptionsButton, 5000);
+    if (showAllOptions) {
+      setReturnWorkflowStatus('Opening return options...');
+      showAllOptions.click();
+      await delay(400);
+    }
     await selectOriginalPaymentMethod();
     const continueButton = await waitForReturnElement(() => findReturnContinueButton('refund-method'), 15000);
     if (!continueButton) throw new Error('refund-method Continue not ready');
