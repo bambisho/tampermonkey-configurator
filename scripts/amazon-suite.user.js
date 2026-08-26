@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      13.3
+// @version      13.4
 // @description  Amazon UK/DE address tools, test-mode return workflow, chat replies, and Delta scenario autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -349,7 +349,8 @@
       child.classList?.contains('ext-order-return-launcher')
     );
     if (existingLauncher) {
-      existingLauncher.href = returnLink.href;
+      existingLauncher.href = buildAutoStartReturnUrl(returnLink.href);
+      positionOrderReturnLauncher(existingLauncher, returnControl);
       returnLink.dataset.extReturnLauncherAttached = 'true';
       return;
     }
@@ -357,19 +358,41 @@
 
     const launcher = document.createElement('a');
     launcher.className = 'ext-order-return-launcher';
-    launcher.href = returnLink.href;
+    launcher.href = buildAutoStartReturnUrl(returnLink.href);
     launcher.rel = 'noopener';
     launcher.title = 'Start return (middle-click opens a new tab)';
     launcher.setAttribute('aria-label', launcher.title);
     launcher.textContent = '↩';
     launcher.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:28px;height:26px;' +
-      'margin-right:6px;border:1px solid #007185;border-radius:7px;background:#fff;color:#007185;' +
+      'flex:0 0 28px;border:1px solid #007185;border-radius:7px;background:#fff;color:#007185;' +
       'font:bold 18px/1 Arial,sans-serif;text-decoration:none;vertical-align:middle;box-sizing:border-box';
     launcher.addEventListener('mouseenter', () => { launcher.style.background = '#e7f4f5'; });
     launcher.addEventListener('mouseleave', () => { launcher.style.background = '#fff'; });
 
     parent.insertBefore(launcher, returnControl);
+    positionOrderReturnLauncher(launcher, returnControl);
     returnLink.dataset.extReturnLauncherAttached = 'true';
+  }
+
+  function buildAutoStartReturnUrl(href) {
+    const url = new URL(href, window.location.origin);
+    url.hash = 'ext-start-return';
+    return url.href;
+  }
+
+  function positionOrderReturnLauncher(launcher, returnControl) {
+    if (returnControl.parentElement?.classList.contains('ext-order-return-row')) return;
+    const parent = returnControl.parentElement;
+    if (!parent) return;
+
+    const row = document.createElement('span');
+    row.className = 'ext-order-return-row';
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box';
+    parent.insertBefore(row, returnControl);
+    row.appendChild(launcher);
+    row.appendChild(returnControl);
+    returnControl.style.flex = '1 1 auto';
+    returnControl.style.margin = '0';
   }
 
   // ========== RETURN LABEL TRACKING BANNER ==========
@@ -598,9 +621,15 @@
   function initReturnsAutoFill() {
     if (!window.location.pathname.includes('/returns/')) return;
 
+    let autoStartPending = consumeReturnAutoStartSignal();
     let busy = false;
     const tick = async () => {
       attachReturnWorkflowButton();
+      if (autoStartPending && !readReturnWorkflowState() && findReasonSelect()) {
+        autoStartPending = false;
+        setReturnWorkflowStatus('Starting return...');
+        saveReturnWorkflowState('reason');
+      }
       if (busy || !readReturnWorkflowState()) return;
       busy = true;
       try {
@@ -616,6 +645,16 @@
 
     tick();
     setInterval(tick, 800);
+  }
+
+  function consumeReturnAutoStartSignal() {
+    const url = new URL(window.location.href);
+    const shouldStart = url.hash === '#ext-start-return' || url.searchParams.get('extStartReturn') === '1';
+    if (!shouldStart) return false;
+    url.hash = '';
+    url.searchParams.delete('extStartReturn');
+    window.history.replaceState(null, '', `${url.pathname}${url.search}`);
+    return true;
   }
 
   function normalizeReturnText(value) {
@@ -826,26 +865,45 @@
         && normalizeReturnText(element.textContent).includes('refund to your original payment method'))
       .sort((a, b) => a.textContent.length - b.textContent.length)[0];
 
-    if (textElement) {
-      const label = textElement.closest('label');
-      const section = textElement.closest('.a-row, .a-section') || textElement.parentElement;
-      const associatedRadio = label?.querySelector('input[type="radio"]')
-        || section?.querySelector('input[type="radio"]')
-        || textElement.previousElementSibling?.matches?.('input[type="radio"]') && textElement.previousElementSibling;
-      if (associatedRadio) return associatedRadio;
-    }
+    if (!textElement) return null;
+    const label = textElement.closest('label');
+    const section = textElement.closest('.a-row, .a-section') || textElement.parentElement;
+    return label?.querySelector('input[type="radio"]')
+      || section?.querySelector('input[type="radio"]')
+      || textElement.previousElementSibling?.matches?.('input[type="radio"]') && textElement.previousElementSibling
+      || null;
+  }
 
-    return Array.from(document.querySelectorAll('input[type="radio"]')).find(element =>
-      isReturnElementVisible(element) && element.checked
-    ) || null;
+  function findShowAllReturnOptionsButton() {
+    return document.querySelector('button[data-event-type="showAllReturnOptions"]')
+      || Array.from(document.querySelectorAll('button, a[role="button"]')).find(element =>
+        normalizeReturnText(element.textContent).includes('continue to return options')
+      )
+      || null;
+  }
+
+  async function selectOriginalPaymentMethod() {
+    let radio = findOriginalPaymentRadio();
+    if (!radio) {
+      const showAllOptions = findShowAllReturnOptionsButton();
+      if (showAllOptions) {
+        showAllOptions.click();
+        await delay(500);
+      }
+      radio = await waitForReturnElement(findOriginalPaymentRadio, 10000);
+    }
+    if (!radio) throw new Error('original payment method not available');
+
+    if (!radio.checked) radio.click();
+    const selected = await waitForReturnElement(() => radio.checked ? radio : null, 4000);
+    if (!selected) throw new Error('original payment method was not selected');
+    return radio;
   }
 
   async function runRefundMethodStep(state) {
-    const radio = findOriginalPaymentRadio();
-    if (radio && !radio.checked) radio.click();
-
-    const continueButton = await waitForReturnElement(findReturnContinueButton, 8000);
-    if (!continueButton) throw new Error('refund-method Continue not found');
+    await selectOriginalPaymentMethod();
+    const continueButton = await waitForReturnElement(findReturnContinueButton, 10000);
+    if (!continueButton) throw new Error('refund-method Continue not ready');
     saveReturnWorkflowState('shipping', state);
     continueButton.click();
     await delay(1200);
