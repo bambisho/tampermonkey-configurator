@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      14.1
-// @description  Amazon UK/DE address tools, return workflow, prioritized return options, label/prep/confirmation tracking, chat replies, and Delta autofill
+// @version      14.2
+// @description  Amazon UK/DE address tools, return workflow, prioritized return options, order-number copy, label/prep/confirmation tracking, chat replies, and Delta autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
 // @match        https://delta.alliance.codes/*
@@ -1014,6 +1014,138 @@
     const response = await fetch(url, { cache: 'no-store' });
     if (!response.ok) throw new Error(`QR image HTTP ${response.status}`);
     return response.arrayBuffer();
+  }
+
+  // ========== ORDER NUMBER COPY CONTROL ==========
+  const AMAZON_ORDER_NUMBER_PATTERN = /\b\d{3}-\d{7}-\d{7}\b/;
+
+  function initOrderNumberCopyControls() {
+    const path = window.location.pathname;
+    if (!path.includes('/your-orders') && !path.includes('/your-orders-access') && !path.includes('/order-details')) return;
+    const scan = () => {
+      if (!document.body) return;
+      decorateOrderNumberTextNodes();
+    };
+    scan();
+    setInterval(scan, 1200);
+  }
+
+  function decorateOrderNumberTextNodes() {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    let node;
+    while ((node = walker.nextNode())) textNodes.push(node);
+
+    for (const textNode of textNodes) {
+      const parent = textNode.parentElement;
+      if (!parent || parent.closest('.ext-copy-order-number, script, style, textarea, input')) continue;
+      const source = textNode.nodeValue || '';
+      const matcher = /(Order\s*(?:No\.?|#)\s*)(\d{3}-\d{7}-\d{7})/ig;
+      let match;
+      let lastIndex = 0;
+      let changed = false;
+      const fragment = document.createDocumentFragment();
+
+      while ((match = matcher.exec(source))) {
+        changed = true;
+        fragment.appendChild(document.createTextNode(source.slice(lastIndex, match.index)));
+        fragment.appendChild(document.createTextNode(match[1]));
+        fragment.appendChild(createOrderNumberCopyControl(match[2]));
+        lastIndex = matcher.lastIndex;
+      }
+
+      if (!changed) continue;
+      fragment.appendChild(document.createTextNode(source.slice(lastIndex)));
+      textNode.replaceWith(fragment);
+    }
+
+    decorateSplitOrderNumberElements();
+  }
+
+  function decorateSplitOrderNumberElements() {
+    const candidates = Array.from(document.querySelectorAll('a, span, div, p, td, th')).filter(element => {
+      if (element.closest('.ext-copy-order-number, script, style, textarea, input')) return false;
+      if (!/(Order\s*(?:No\.?|#))/i.test(element.textContent || '')) return false;
+      return AMAZON_ORDER_NUMBER_PATTERN.test(element.textContent || '');
+    });
+
+    for (const candidate of candidates) {
+      const descendants = Array.from(candidate.querySelectorAll('*')).filter(element => {
+        if (element.closest('.ext-copy-order-number')) return false;
+        return AMAZON_ORDER_NUMBER_PATTERN.test(element.textContent || '')
+          && !element.querySelector('.ext-copy-order-number');
+      });
+      const numberElement = descendants.sort((a, b) => a.textContent.length - b.textContent.length)[0];
+      if (!numberElement) continue;
+      const match = (numberElement.textContent || '').match(AMAZON_ORDER_NUMBER_PATTERN);
+      if (!match) continue;
+      const textNode = Array.from(numberElement.childNodes).find(node =>
+        node.nodeType === Node.TEXT_NODE && AMAZON_ORDER_NUMBER_PATTERN.test(node.nodeValue || '')
+      );
+      if (!textNode) continue;
+      const source = textNode.nodeValue || '';
+      const start = source.search(AMAZON_ORDER_NUMBER_PATTERN);
+      if (start < 0) continue;
+      const orderNumber = source.slice(start, start + match[0].length);
+      const fragment = document.createDocumentFragment();
+      fragment.appendChild(document.createTextNode(source.slice(0, start)));
+      fragment.appendChild(createOrderNumberCopyControl(orderNumber));
+      fragment.appendChild(document.createTextNode(source.slice(start + orderNumber.length)));
+      textNode.replaceWith(fragment);
+    }
+  }
+
+  function createOrderNumberCopyControl(orderNumber) {
+    const control = document.createElement('span');
+    control.className = 'ext-copy-order-number';
+    control.dataset.copyValue = orderNumber;
+    control.textContent = orderNumber;
+    control.tabIndex = 0;
+    control.setAttribute('role', 'button');
+    control.setAttribute('aria-label', `Copy order number ${orderNumber}`);
+    control.title = 'Click to copy order number';
+    control.style.cssText = 'display:inline-block;cursor:pointer;user-select:all;color:#007185;' +
+      'background:#f0f8ff;border:1px solid #007185;border-radius:6px;padding:1px 4px;font-weight:600;';
+    const copy = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      copyOrderNumber(control);
+    };
+    control.addEventListener('click', copy);
+    control.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') copy(event);
+    });
+    return control;
+  }
+
+  async function copyOrderNumber(control) {
+    const orderNumber = control?.dataset?.copyValue;
+    if (!orderNumber) return false;
+    let copied = false;
+    try {
+      if (typeof GM_setClipboard === 'function') {
+        GM_setClipboard(orderNumber, 'text');
+        copied = true;
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(orderNumber);
+        copied = true;
+      }
+    } catch (error) {
+      console.warn('[OrderCopy] Clipboard API failed:', error);
+    }
+    if (!copied) copied = fallbackCopyReturnTrackingNumber(orderNumber);
+    if (!copied) return false;
+
+    control.style.background = '#d5f5e3';
+    control.style.borderColor = '#067d62';
+    control.title = 'Copied to clipboard';
+    setTimeout(() => {
+      if (control.dataset.copyValue !== orderNumber) return;
+      control.style.background = '#f0f8ff';
+      control.style.borderColor = '#007185';
+      control.title = 'Click to copy order number';
+    }, 900);
+    return true;
   }
 
   // ========== RETURNS TEST WORKFLOW ==========
@@ -2695,6 +2827,7 @@ scenario_id,timer_work,timer_sleep,cursor_speed,google_item_search,google_custom
         setTimeout(() => clearInterval(interval), 15000);
     }
 
+        initOrderNumberCopyControls();
         })();
     }
 
