@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      13.7
+// @version      13.8
 // @description  Amazon UK/DE address tools, return workflow, label/prep tracking, chat replies, and Delta autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -973,8 +973,8 @@
   }
 
   // ========== RETURNS TEST WORKFLOW ==========
-  // Starts only when the user presses the injected button. It advances through
-  // the reason, condition and refund-method pages, then stops before the final
+  // Starts from the orders-page launcher or the injected button. It advances through
+  // maximum quantity, reason, condition and refund-method pages, then stops before the final
   // collection-address / confirmation step.
   const RETURN_WORKFLOW_KEY = 'amazon_return_test_workflow_v1';
   const RETURN_WORKFLOW_MAX_AGE_MS = 10 * 60 * 1000;
@@ -1068,10 +1068,10 @@
     let busy = false;
     const tick = async () => {
       attachReturnWorkflowButton();
-      if (autoStartPending && !readReturnWorkflowState() && findReasonSelect()) {
+      if (autoStartPending && !readReturnWorkflowState() && (findReturnQuantityHeading() || findReasonSelect())) {
         autoStartPending = false;
         setReturnWorkflowStatus('Starting return...');
-        saveReturnWorkflowState('reason');
+        saveReturnWorkflowState(findReturnQuantityHeading() ? 'quantity' : 'reason');
       }
       if (busy || !readReturnWorkflowState()) return;
       busy = true;
@@ -1174,6 +1174,68 @@
     );
   }
 
+  function findReturnQuantityHeading() {
+    return findReturnHeading('how many of this item are you returning');
+  }
+
+  function parseReturnQuantity(value) {
+    const match = String(value || '').match(/\d+/);
+    const quantity = match ? Number(match[0]) : NaN;
+    return Number.isFinite(quantity) && quantity > 0 ? quantity : null;
+  }
+
+  function findReturnQuantityControl() {
+    const heading = findReturnQuantityHeading();
+    if (!heading) return null;
+    const scope = heading.closest('form') || document;
+
+    const selects = Array.from(scope.querySelectorAll('select')).filter(isReturnElementVisible);
+    for (const select of selects) {
+      const options = Array.from(select.options || [])
+        .filter(option => !option.disabled)
+        .map(option => ({ option, quantity: parseReturnQuantity(option.value) ?? parseReturnQuantity(option.textContent) }))
+        .filter(item => item.quantity !== null);
+      if (options.length) return { type: 'select', element: select, options };
+    }
+
+    const numberInput = Array.from(scope.querySelectorAll('input[type="number"]')).find(isReturnElementVisible);
+    if (numberInput) {
+      const quantity = parseReturnQuantity(numberInput.max)
+        ?? parseReturnQuantity(numberInput.getAttribute('aria-valuemax'));
+      if (quantity !== null) return { type: 'number', element: numberInput, quantity };
+    }
+
+    const choices = Array.from(scope.querySelectorAll('input[type="radio"], [role="radio"], [role="option"], button'))
+      .filter(element => isReturnElementVisible(element) && !element.disabled)
+      .map(element => ({
+        element,
+        quantity: parseReturnQuantity(element.value)
+          ?? parseReturnQuantity(element.getAttribute('data-value'))
+          ?? (/^\s*\d+\s*$/.test(element.textContent || '') ? parseReturnQuantity(element.textContent) : null)
+      }))
+      .filter(item => item.quantity !== null);
+    return choices.length ? { type: 'choices', options: choices } : null;
+  }
+
+  async function selectMaximumReturnQuantity() {
+    const control = await waitForReturnElement(findReturnQuantityControl, 8000);
+    if (!control) throw new Error('return quantity control not found');
+
+    if (control.type === 'select') {
+      const selected = control.options.reduce((maximum, item) => item.quantity > maximum.quantity ? item : maximum);
+      setNativeReturnValue(control.element, selected.option.value);
+      return selected.quantity;
+    }
+    if (control.type === 'number') {
+      setNativeReturnValue(control.element, String(control.quantity));
+      return control.quantity;
+    }
+
+    const selected = control.options.reduce((maximum, item) => item.quantity > maximum.quantity ? item : maximum);
+    selected.element.click();
+    return selected.quantity;
+  }
+
   function findReasonSelect() {
     return Array.from(document.querySelectorAll('select')).find(select =>
       isReturnElementVisible(select)
@@ -1181,9 +1243,9 @@
     ) || null;
   }
 
-  function findReasonTextarea(reasonKey) {
+  function findReasonTextarea(reasonKey, visibleOnly = true) {
     return Array.from(document.querySelectorAll('textarea')).find(textarea =>
-      isReturnElementVisible(textarea)
+      (!visibleOnly || isReturnElementVisible(textarea))
       && `${textarea.id || ''} ${textarea.name || ''}`.includes(reasonKey)
     ) || null;
   }
@@ -1194,16 +1256,32 @@
     return !disabledWrapper;
   }
 
-  function findReturnContinueButton() {
+  function findReturnContinueButton(stage = '') {
+    const eventTypes = {
+      quantity: 'quantitySelectionContinueClicked',
+      reason: 'returnReasonContinueClicked',
+      condition: 'productConditionContinueClicked'
+    };
+    const eventType = eventTypes[stage];
+    if (eventType) {
+      const stageControl = document.querySelector(`[data-event-type="${eventType}"]`);
+      if (isReturnControlEnabled(stageControl)) return stageControl;
+    }
+    if (stage === 'refund-method') {
+      const resolutionControl = document.querySelector('[data-form-id="resolutionSectionForm"]')
+        || document.querySelector('[data-event-type="resolutionCenterContinueButtonClicked"]');
+      if (isReturnControlEnabled(resolutionControl)) return resolutionControl;
+    }
+
     const direct = Array.from(document.querySelectorAll('input[name="continue"], button[name="continue"]'))
       .find(isReturnControlEnabled);
     if (direct) return direct;
 
     return Array.from(document.querySelectorAll('button, input[type="submit"], a[role="button"]')).find(element => {
       if (!isReturnControlEnabled(element)) return false;
-      const ownText = element.value || element.textContent || '';
-      const wrapperText = element.closest('.a-button')?.textContent || '';
-      return normalizeReturnText(ownText || wrapperText) === 'continue';
+      const ownText = normalizeReturnText(element.value || element.textContent || '');
+      const wrapperText = normalizeReturnText(element.closest('.a-button')?.textContent || '');
+      return ownText === 'continue' || wrapperText === 'continue';
     }) || null;
   }
 
@@ -1216,9 +1294,13 @@
 
   function attachReturnWorkflowButton() {
     if (document.getElementById('ext-return-workflow-btn')) return;
-    const heading = findReturnHeading('reason for return');
-    const reasonSelect = findReasonSelect();
-    if (!heading || !reasonSelect) return;
+    const quantityHeading = findReturnQuantityHeading();
+    const reasonHeading = findReturnHeading('reason for return');
+    const isQuantityPage = !!quantityHeading;
+    const heading = quantityHeading || reasonHeading;
+    if (!heading) return;
+    if (isQuantityPage && !findReturnQuantityControl()) return;
+    if (!isQuantityPage && !findReasonSelect()) return;
 
     const btn = createButton('ext-return-workflow-btn', 'START RETURN');
     btn.style.marginLeft = '18px';
@@ -1226,9 +1308,20 @@
       event.preventDefault();
       if (readReturnWorkflowState()) return;
       setReturnWorkflowStatus('Starting return...');
-      saveReturnWorkflowState('reason');
+      saveReturnWorkflowState(isQuantityPage ? 'quantity' : 'reason');
     });
     heading.appendChild(btn);
+  }
+
+  async function runQuantityStep(state) {
+    const quantity = await selectMaximumReturnQuantity();
+    setReturnWorkflowStatus(`Quantity ${quantity} selected...`);
+    await delay(250);
+    const continueButton = await waitForReturnElement(() => findReturnContinueButton('quantity'), 15000);
+    if (!continueButton) throw new Error('quantity page Continue not ready');
+    saveReturnWorkflowState('reason', { ...state, returnQuantity: quantity });
+    continueButton.click();
+    await delay(1200);
   }
 
   async function runReasonStep() {
@@ -1246,11 +1339,19 @@
     setNativeReturnValue(select, reasonKey);
     setReturnWorkflowStatus('Reason selected...');
 
-    const textarea = await waitForReturnElement(() => findReasonTextarea(reasonKey), 5000);
-    if (textarea) setNativeReturnValue(textarea, description);
+    const configuredTextarea = findReasonTextarea(reasonKey, false);
+    const commentRequired = configuredTextarea?.getAttribute('aria-required') === 'true';
+    const textarea = configuredTextarea
+      ? await waitForReturnElement(() => findReasonTextarea(reasonKey), commentRequired ? 15000 : 7000)
+      : null;
+    if (commentRequired && !textarea) throw new Error('required reason comment not ready');
+    if (textarea) {
+      setNativeReturnValue(textarea, description);
+      textarea.dispatchEvent(new Event('blur', { bubbles: true }));
+    }
 
-    const continueButton = await waitForReturnElement(findReturnContinueButton, 8000);
-    if (!continueButton) throw new Error('reason page Continue not found');
+    const continueButton = await waitForReturnElement(() => findReturnContinueButton('reason'), 15000);
+    if (!continueButton) throw new Error('reason page Continue not ready');
     saveReturnWorkflowState('condition', { reasonKey, description });
     continueButton.click();
     await delay(1200);
@@ -1263,6 +1364,11 @@
     if (isReturnStopPage()) {
       console.log('[ReturnWorkflow] Stopped before collection address / final confirmation.');
       clearReturnWorkflowState();
+      return;
+    }
+
+    if (findReturnQuantityHeading()) {
+      await runQuantityStep(state);
       return;
     }
 
@@ -1295,8 +1401,8 @@
     }
 
     if (clicked < 4) throw new Error('condition questions not recognized');
-    const continueButton = await waitForReturnElement(findReturnContinueButton, 8000);
-    if (!continueButton) throw new Error('condition page Continue not found');
+    const continueButton = await waitForReturnElement(() => findReturnContinueButton('condition'), 15000);
+    if (!continueButton) throw new Error('condition page Continue not ready');
     saveReturnWorkflowState('refund-method', state);
     continueButton.click();
     await delay(1200);
@@ -1322,22 +1428,24 @@
   }
 
   function findShowAllReturnOptionsButton() {
-    return document.querySelector('button[data-event-type="showAllReturnOptions"]')
-      || Array.from(document.querySelectorAll('button, a[role="button"]')).find(element =>
-        normalizeReturnText(element.textContent).includes('continue to return options')
-      )
-      || null;
+    const direct = document.querySelector('button[data-event-type="showAllReturnOptions"]');
+    if (isReturnControlEnabled(direct)) return direct;
+    return Array.from(document.querySelectorAll('button, input[type="submit"], a[role="button"]')).find(element =>
+      isReturnControlEnabled(element)
+      && normalizeReturnText(`${element.value || ''} ${element.textContent || ''} ${element.closest('.a-button')?.textContent || ''}`)
+        .includes('continue to return options')
+    ) || null;
   }
 
   async function selectOriginalPaymentMethod() {
     let methodText = findOriginalPaymentMethodText();
     if (!methodText) {
-      const showAllOptions = findShowAllReturnOptionsButton();
+      const showAllOptions = await waitForReturnElement(findShowAllReturnOptionsButton, 10000);
       if (showAllOptions) {
         showAllOptions.click();
         await delay(500);
       }
-      methodText = await waitForReturnElement(findOriginalPaymentMethodText, 10000);
+      methodText = await waitForReturnElement(findOriginalPaymentMethodText, 15000);
     }
     if (!methodText) throw new Error('original payment method not available');
 
@@ -1356,7 +1464,7 @@
 
   async function runRefundMethodStep(state) {
     await selectOriginalPaymentMethod();
-    const continueButton = await waitForReturnElement(findReturnContinueButton, 10000);
+    const continueButton = await waitForReturnElement(() => findReturnContinueButton('refund-method'), 15000);
     if (!continueButton) throw new Error('refund-method Continue not ready');
     saveReturnWorkflowState('shipping', state);
     continueButton.click();
