@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      13.4
+// @version      13.5
 // @description  Amazon UK/DE address tools, test-mode return workflow, chat replies, and Delta scenario autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
@@ -859,12 +859,16 @@
     await delay(1200);
   }
 
-  function findOriginalPaymentRadio() {
-    const textElement = Array.from(document.querySelectorAll('label, span, div'))
+  function findOriginalPaymentMethodText() {
+    return Array.from(document.querySelectorAll('label, span, div, strong, p'))
       .filter(element => isReturnElementVisible(element)
         && normalizeReturnText(element.textContent).includes('refund to your original payment method'))
-      .sort((a, b) => a.textContent.length - b.textContent.length)[0];
+      .sort((a, b) => a.textContent.length - b.textContent.length)[0]
+      || null;
+  }
 
+  function findOriginalPaymentRadio() {
+    const textElement = findOriginalPaymentMethodText();
     if (!textElement) return null;
     const label = textElement.closest('label');
     const section = textElement.closest('.a-row, .a-section') || textElement.parentElement;
@@ -883,16 +887,23 @@
   }
 
   async function selectOriginalPaymentMethod() {
-    let radio = findOriginalPaymentRadio();
-    if (!radio) {
+    let methodText = findOriginalPaymentMethodText();
+    if (!methodText) {
       const showAllOptions = findShowAllReturnOptionsButton();
       if (showAllOptions) {
         showAllOptions.click();
         await delay(500);
       }
-      radio = await waitForReturnElement(findOriginalPaymentRadio, 10000);
+      methodText = await waitForReturnElement(findOriginalPaymentMethodText, 10000);
     }
-    if (!radio) throw new Error('original payment method not available');
+    if (!methodText) throw new Error('original payment method not available');
+
+    const radio = findOriginalPaymentRadio();
+    if (!radio) {
+      const visibleRadios = Array.from(document.querySelectorAll('input[type="radio"]')).filter(isReturnElementVisible);
+      if (visibleRadios.length) throw new Error('original payment method control not recognized');
+      return null; // Amazon sometimes renders one preselected method as text only.
+    }
 
     if (!radio.checked) radio.click();
     const selected = await waitForReturnElement(() => radio.checked ? radio : null, 4000);
