@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      14.3
-// @description  Amazon UK/DE address tools, deterministic return-options and original-payment continuation, order-number copy, tracking, chat replies, and Delta autofill
+// @version      14.4
+// @description  Amazon UK/DE address tools, deterministic return workflow with one-time Ireland address handoff, order-number copy, tracking, chat replies, and Delta autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
 // @match        https://delta.alliance.codes/*
@@ -1588,6 +1588,7 @@
   }
 
   function detectReturnWorkflowStage() {
+    if (isReturnCollectionAddressPage()) return 'ireland-address';
     if (isReturnStopPage()) return 'stop';
     if (findReturnQuantityHeading()) return 'quantity';
     if (findReturnHeading('how can we make it right')) return 'refund-method';
@@ -1600,8 +1601,13 @@
     const state = readReturnWorkflowState();
     if (!state) return;
 
+    if (isReturnCollectionAddressPage()) {
+      await runIrelandAddressHandoff(state);
+      return;
+    }
+
     if (isReturnStopPage()) {
-      console.log('[ReturnWorkflow] Stopped before collection address / final confirmation.');
+      console.log('[ReturnWorkflow] Stopped before final confirmation.');
       clearReturnWorkflowState();
       return;
     }
@@ -1778,11 +1784,40 @@
     await delay(1200);
   }
 
+  function isReturnCollectionAddressPage() {
+    if (findReturnHeading('how would you like to return your items')) return true;
+    return Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"], label, strong'))
+      .some(element => isReturnElementVisible(element)
+        && normalizeReturnText(element.textContent).includes('collection address'));
+  }
+
+  async function runIrelandAddressHandoff(state) {
+    if (state?.irelandAddressStarted) {
+      clearReturnWorkflowState();
+      return;
+    }
+
+    const button = await waitForReturnElement(() => {
+      const candidate = document.getElementById('ext-ie-address-btn');
+      return isReturnControlEnabled(candidate) ? candidate : null;
+    }, 12000);
+    if (!button) throw new Error('Add Ireland Address button not ready');
+
+    saveReturnWorkflowState('ireland-address', { ...state, irelandAddressStarted: true });
+    button.click();
+    clearReturnWorkflowState();
+    console.log('[ReturnWorkflow] Ireland address flow started; final confirmation remains manual.');
+  }
+
   function isReturnStopPage() {
-    const bodyText = normalizeReturnText(document.body?.innerText || '');
-    return Boolean(findReturnHeading('how would you like to return your items'))
-      || bodyText.includes('collection address')
-      || bodyText.includes('confirm your return');
+    if (isReturnCollectionAddressPage()) return false;
+    if (findReturnHeading('confirm your return')) return true;
+    return Array.from(document.querySelectorAll('button, input[type="submit"], a[role="button"]'))
+      .some(element => {
+        if (!isReturnElementVisible(element)) return false;
+        const text = normalizeReturnText(`${element.value || ''} ${element.textContent || ''} ${element.closest('.a-button')?.textContent || ''}`);
+        return text.includes('confirm your return');
+      });
   }
 
 
