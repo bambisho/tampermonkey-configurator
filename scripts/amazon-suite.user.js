@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      14.4
-// @description  Amazon UK/DE address tools, deterministic return workflow with one-time Ireland address handoff, order-number copy, tracking, chat replies, and Delta autofill
+// @version      14.5
+// @description  Amazon UK/DE address tools, background multi-tab return recovery, verified Ireland address retries, order-number copy, tracking, chat replies, and Delta autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
 // @match        https://delta.alliance.codes/*
@@ -48,6 +48,7 @@
     if (isUK) {
       initUKReturns();
       initReturnsAutoFill();
+      initReturnContractAutoController();
       initChatQuickReplies();
     }
   }, 0);
@@ -74,7 +75,10 @@
         e.preventDefault();
         btn.textContent = 'Working...';
         btn.style.background = '#f0a030';
-        startUKFlow();
+        startUKFlow().catch(error => {
+          console.warn('[AddressFiller] Ireland address flow failed:', error);
+          updateButton('ext-ie-address-btn', 'error', 'Retry Ireland Address');
+        });
       });
 
       targetLink.parentElement.appendChild(btn);
@@ -85,85 +89,94 @@
     setInterval(attachIfNeeded, 1500);
   }
 
-  function startUKFlow() {
-    // Step 1: Click "Change address"
-    const changeLinks = document.querySelectorAll('a[role="button"]');
-    let changeAddr = null;
-    for (const link of changeLinks) {
-      if (link.textContent.trim() === 'Change address') {
-        changeAddr = link;
-        break;
-      }
-    }
-    if (!changeAddr) {
-      updateButton('ext-ie-address-btn', 'error', 'Change address not found');
-      return;
-    }
-    changeAddr.click();
+  let irelandAddressFlowPromise = null;
 
-    // Step 2: Wait for "Add an address" link to appear in the modal
-    observeFor(() => {
-      return document.getElementById('add-new-address-link');
-    }, (addLink) => {
-      addLink.click();
-
-      // Step 3: Wait for the address form to appear
-      observeFor(() => {
-        return document.getElementById('address-ui-widgets-enterAddressFormContainer');
-      }, () => {
-        const addr = IE_ADDRESSES[Math.floor(Math.random() * IE_ADDRESSES.length)];
-        fillIrishAddress(addr);
-      });
-    });
+  function findIrelandChangeAddressControl() {
+    return Array.from(document.querySelectorAll('a[role="button"], button, [data-action="a-modal"]'))
+      .find(element => isReturnControlEnabled(element)
+        && normalizeReturnText(element.textContent) === 'change address') || null;
   }
 
-  function fillIrishAddress(addr) {
-    // Set country to Ireland
-    setCountry('IE', 'Ireland');
+  async function runUKFlowWithRetries() {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      let form = document.getElementById('address-ui-widgets-enterAddressFormContainer');
+      if (isReturnElementVisible(form)) {
+        await fillIrishAddress(randomItem(IE_ADDRESSES));
+        return true;
+      }
 
-    // After country change, Amazon rebuilds the entire form.
-    // We need to wait for the rebuild to complete before filling.
-    // Strategy: wait 4s for the form to stabilize (Amazon lag), then observe for City field specifically.
-    setTimeout(() => {
-      // Wait until the City field exists in the DOM (confirms form rebuild is done)
-      observeFor(() => {
-        const cityEl = document.getElementById('address-ui-widgets-enterAddressCity');
-        // Make sure it's actually visible/attached
-        return (cityEl && cityEl.offsetParent !== null) ? cityEl : null;
-      }, () => {
-        // Extra stabilization delay
-        setTimeout(() => {
-          clearAndSet('address-ui-widgets-enterAddressFullName', addr.name);
-          clearAndSet('address-ui-widgets-enterAddressPhoneNumber', addr.phone);
-          clearAndSet('address-ui-widgets-enterAddressLine1', addr.line1);
-          clearAndSet('address-ui-widgets-enterAddressLine2', addr.line2 || '');
-          clearAndSet('address-ui-widgets-enterAddressPostalCode', addr.postcode);
+      let addLink = document.getElementById('add-new-address-link');
+      if (!isReturnControlEnabled(addLink)) {
+        const changeAddr = findIrelandChangeAddressControl();
+        if (changeAddr) changeAddr.click();
+        addLink = await waitForReturnElement(() => {
+          const candidate = document.getElementById('add-new-address-link');
+          return isReturnControlEnabled(candidate) ? candidate : null;
+        }, 6000);
+      }
 
-          // Fill City with a separate delay to ensure it sticks
-          setTimeout(() => {
-            clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
+      if (addLink) addLink.click();
+      form = await waitForReturnElement(() => {
+        const candidate = document.getElementById('address-ui-widgets-enterAddressFormContainer');
+        return isReturnElementVisible(candidate) ? candidate : null;
+      }, 8000);
 
-            // Handle county dropdown for Ireland
-            setTimeout(() => {
-              handleIrishCounty(addr.county);
+      if (form) {
+        await fillIrishAddress(randomItem(IE_ADDRESSES));
+        return true;
+      }
 
-              // Submit after everything is filled
-              setTimeout(() => {
-                // Re-fill city one more time as a safety measure (Amazon sometimes clears it)
-                const cityCheck = document.getElementById('address-ui-widgets-enterAddressCity');
-                if (cityCheck && !cityCheck.value) {
-                  clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
-                }
-                setTimeout(() => {
-                  clickAddressSubmit();
-                  updateButton('ext-ie-address-btn', 'done', 'Address Added!');
-                }, 400);
-              }, 600);
-            }, 500);
-          }, 500);
-        }, 500);
+      updateButton('ext-ie-address-btn', 'working', `Retrying address (${attempt}/5)...`);
+      await delay(700);
+    }
+
+    throw new Error('Ireland address form did not open');
+  }
+
+  function startUKFlow() {
+    if (irelandAddressFlowPromise) return irelandAddressFlowPromise;
+    irelandAddressFlowPromise = runUKFlowWithRetries()
+      .finally(() => {
+        setTimeout(() => { irelandAddressFlowPromise = null; }, 1000);
       });
-    }, 4000);
+    return irelandAddressFlowPromise;
+  }
+
+  function normalizeIrishPhone(phone) {
+    const digits = String(phone || '').replace(/\D/g, '');
+    const localMatch = digits.match(/(0\d{8,9})$/);
+    return localMatch ? `+353${localMatch[1].slice(1)}` : String(phone || '').replace(/^\+373/, '+353');
+  }
+
+  async function fillIrishAddress(addr) {
+    setCountry('IE', 'Ireland');
+    await delay(4000);
+
+    const cityField = await waitForReturnElement(() => {
+      const candidate = document.getElementById('address-ui-widgets-enterAddressCity');
+      return isReturnElementVisible(candidate) ? candidate : null;
+    }, 12000);
+    if (!cityField) throw new Error('Ireland address form fields not ready');
+
+    await delay(500);
+    clearAndSet('address-ui-widgets-enterAddressFullName', addr.name);
+    clearAndSet('address-ui-widgets-enterAddressPhoneNumber', normalizeIrishPhone(addr.phone));
+    clearAndSet('address-ui-widgets-enterAddressLine1', addr.line1);
+    clearAndSet('address-ui-widgets-enterAddressLine2', addr.line2 || '');
+    clearAndSet('address-ui-widgets-enterAddressPostalCode', addr.postcode);
+    clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
+
+    await delay(500);
+    handleIrishCounty(addr.county);
+    await delay(600);
+
+    const cityCheck = document.getElementById('address-ui-widgets-enterAddressCity');
+    if (cityCheck && !cityCheck.value) clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
+
+    await delay(400);
+    if (!clickAddressSubmit()) throw new Error('Ireland address submit control not ready');
+    updateButton('ext-ie-address-btn', 'done', 'Address Added!');
+    return true;
   }
 
   function handleIrishCounty(county) {
@@ -1243,7 +1256,9 @@
 
     let autoStartFlowId = consumeReturnAutoStartSignal();
     let busy = false;
+    let scheduled = false;
     const tick = async () => {
+      scheduled = false;
       attachReturnWorkflowButton();
       const visibleStage = detectReturnWorkflowStage();
       if (autoStartFlowId && visibleStage && visibleStage !== 'stop') {
@@ -1251,7 +1266,7 @@
         saveReturnWorkflowState(visibleStage, { flowId: autoStartFlowId, retryCount: 0 });
         autoStartFlowId = null;
       }
-      if (document.hidden || busy || !readReturnWorkflowState()) return;
+      if (busy || !readReturnWorkflowState()) return;
       busy = true;
       try {
         await resumeReturnWorkflow();
@@ -1262,8 +1277,16 @@
       }
     };
 
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      setTimeout(tick, 50);
+    };
+
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'disabled', 'aria-disabled', 'checked', 'value'] });
     tick();
-    setInterval(tick, 800);
+    setInterval(schedule, 800);
   }
 
   function recordReturnWorkflowRetry(error, visibleStage = null) {
@@ -1307,16 +1330,10 @@
   }
 
   async function waitForReturnElement(findFn, timeoutMs = 8000, intervalMs = 150) {
-    let activeElapsed = 0;
-    let lastCheckedAt = Date.now();
-    while (activeElapsed < timeoutMs) {
-      const now = Date.now();
-      if (!document.hidden) {
-        activeElapsed += now - lastCheckedAt;
-        const result = findFn();
-        if (result) return result;
-      }
-      lastCheckedAt = now;
+    const maxChecks = Math.max(1, Math.ceil(timeoutMs / intervalMs));
+    for (let check = 0; check < maxChecks; check++) {
+      const result = findFn();
+      if (result) return result;
       await delay(intervalMs);
     }
     return null;
@@ -1600,6 +1617,7 @@
   async function resumeReturnWorkflow() {
     const state = readReturnWorkflowState();
     if (!state) return;
+    if (window.__extReturnContractControllerActive && isReturnContractPage()) return;
 
     if (isReturnCollectionAddressPage()) {
       await runIrelandAddressHandoff(state);
@@ -1732,6 +1750,83 @@
     }) || null;
   }
 
+  function isReturnContractPage() {
+    return window.location.pathname.includes('/spr/returns/contract/');
+  }
+
+  function initReturnContractAutoController() {
+    if (!isReturnContractPage() || window.__extReturnContractControllerActive) return;
+    window.__extReturnContractControllerActive = true;
+
+    const attempts = new WeakMap();
+    let busy = false;
+    let scheduled = false;
+
+    const clickWithRetry = (control, action, cooldownMs, maxAttempts = 12) => {
+      if (!isReturnControlEnabled(control)) return false;
+      const previous = attempts.get(control) || { action, count: 0, time: 0 };
+      const now = Date.now();
+      if (previous.action === action && (previous.count >= maxAttempts || now - previous.time < cooldownMs)) return false;
+      attempts.set(control, { action, count: previous.action === action ? previous.count + 1 : 1, time: now });
+      control.focus?.();
+      control.click();
+      return true;
+    };
+
+    const ensureControllerState = () => {
+      const current = readReturnWorkflowState();
+      if (current) return current;
+      const flowId = `contract-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      saveReturnWorkflowState('refund-method', { flowId, retryCount: 0, contractController: true });
+      return readReturnWorkflowState();
+    };
+
+    const run = async () => {
+      scheduled = false;
+      if (busy || !isReturnContractPage() || isReturnCollectionAddressPage() || isReturnStopPage()) return;
+      busy = true;
+      try {
+        const state = ensureControllerState();
+        const originalMethod = findOriginalPaymentMethodText();
+
+        if (!originalMethod) {
+          const showAllOptions = findShowAllReturnOptionsButton();
+          if (showAllOptions && clickWithRetry(showAllOptions, 'show-return-options', 1200)) {
+            setTimeout(schedule, 1300);
+          }
+          return;
+        }
+
+        const radio = findOriginalPaymentRadio();
+        if (radio && !radio.checked) {
+          if (clickWithRetry(radio, 'select-original-payment', 800)) setTimeout(schedule, 150);
+          return;
+        }
+
+        const continueButton = findReturnContinueButton('refund-method');
+        if (continueButton) {
+          saveReturnWorkflowState('shipping', state);
+          clickWithRetry(continueButton, 'continue-refund', 5000, 4);
+        }
+      } catch (error) {
+        recordReturnWorkflowRetry(error, 'refund-method');
+      } finally {
+        busy = false;
+      }
+    };
+
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      setTimeout(run, 50);
+    };
+
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'disabled', 'aria-disabled', 'checked'] });
+    run();
+    setInterval(run, 750);
+  }
+
   async function selectOriginalPaymentMethod() {
     let methodText = findOriginalPaymentMethodText();
     if (!methodText) {
@@ -1792,21 +1887,18 @@
   }
 
   async function runIrelandAddressHandoff(state) {
-    if (state?.irelandAddressStarted) {
-      clearReturnWorkflowState();
-      return;
-    }
-
     const button = await waitForReturnElement(() => {
       const candidate = document.getElementById('ext-ie-address-btn');
       return isReturnControlEnabled(candidate) ? candidate : null;
     }, 12000);
     if (!button) throw new Error('Add Ireland Address button not ready');
 
-    saveReturnWorkflowState('ireland-address', { ...state, irelandAddressStarted: true });
+    const attempt = (state?.irelandAddressAttempts || 0) + 1;
+    saveReturnWorkflowState('ireland-address', { ...state, irelandAddressAttempts: attempt });
     button.click();
+    await startUKFlow();
     clearReturnWorkflowState();
-    console.log('[ReturnWorkflow] Ireland address flow started; final confirmation remains manual.');
+    console.log('[ReturnWorkflow] Ireland address form opened; final confirmation remains manual.');
   }
 
   function isReturnStopPage() {
@@ -2173,33 +2265,28 @@
   }
 
   function clickAddressSubmit() {
-    // Try button by ID (UK modal)
     const submitBtn = document.getElementById('add-address-button-id-announce');
-    if (submitBtn) { submitBtn.click(); return; }
+    if (isReturnControlEnabled(submitBtn)) { submitBtn.click(); return true; }
 
-    // Try the span wrapper (DE page)
     const submitSpan = document.getElementById('address-ui-widgets-form-submit-button');
     if (submitSpan) {
-      const inp = submitSpan.querySelector('input[type="submit"]');
-      if (inp) { inp.click(); return; }
-      const btn = submitSpan.querySelector('button');
-      if (btn) { btn.click(); return; }
-      submitSpan.click();
-      return;
+      const control = submitSpan.querySelector('input[type="submit"], button') || submitSpan;
+      if (isReturnControlEnabled(control)) { control.click(); return true; }
     }
 
-    // Fallback: find submit input in the form
     const form = document.getElementById('address-ui-widgets-enterAddressFormContainer');
-    if (form) {
-      const submit = form.querySelector('input[type="submit"]');
-      if (submit) { submit.click(); return; }
-    }
+    const submit = form?.querySelector('input[type="submit"], button[type="submit"]');
+    if (isReturnControlEnabled(submit)) { submit.click(); return true; }
+    return false;
   }
 
   function updateButton(btnId, state, msg) {
     const btn = document.getElementById(btnId);
     if (!btn) return;
-    if (state === 'done') {
+    if (state === 'working') {
+      btn.textContent = msg || 'Working...';
+      btn.style.background = '#f0a030';
+    } else if (state === 'done') {
       btn.textContent = '\u2713 ' + msg;
       btn.style.background = '#28a745';
       setTimeout(() => {
