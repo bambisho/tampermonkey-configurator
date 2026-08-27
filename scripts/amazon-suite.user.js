@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Amazon Suite (Address Filler + Platinum Autofill)
 // @namespace    amazon.suite.combined
-// @version      14.2
-// @description  Amazon UK/DE address tools, return workflow, prioritized return options, order-number copy, label/prep/confirmation tracking, chat replies, and Delta autofill
+// @version      14.3
+// @description  Amazon UK/DE address tools, deterministic return-options and original-payment continuation, order-number copy, tracking, chat replies, and Delta autofill
 // @match        https://www.amazon.co.uk/*
 // @match        https://www.amazon.de/*
 // @match        https://delta.alliance.codes/*
@@ -1497,9 +1497,13 @@
       if (isReturnControlEnabled(stageControl)) return stageControl;
     }
     if (stage === 'refund-method') {
-      const resolutionControl = document.querySelector('[data-form-id="resolutionSectionForm"]')
-        || document.querySelector('[data-event-type="resolutionCenterContinueButtonClicked"]');
-      if (isReturnControlEnabled(resolutionControl)) return resolutionControl;
+      const resolutionControls = [
+        ...document.querySelectorAll('#resolutions-section-continue-button input[type="submit"]'),
+        ...document.querySelectorAll('input[type="submit"][data-form-id="resolutionSectionForm"]'),
+        ...document.querySelectorAll('[data-event-type="resolutionCenterContinueButtonClicked"]')
+      ];
+      const resolutionControl = resolutionControls.find(isReturnControlEnabled);
+      if (resolutionControl) return resolutionControl;
     }
 
     const direct = Array.from(document.querySelectorAll('input[name="continue"], button[name="continue"]'))
@@ -1658,7 +1662,13 @@
   }
 
   function findOriginalPaymentMethodText() {
-    return Array.from(document.querySelectorAll('label, span, div, strong, p'))
+    const preferred = document.getElementById('prex-resolution-refund-OriginalPurchaser-title-component');
+    if (isReturnElementVisible(preferred)
+      && normalizeReturnText(preferred.textContent).includes('refund to your original payment method')) {
+      return preferred;
+    }
+
+    return Array.from(document.querySelectorAll('label, span, div, strong, p, [role="heading"]'))
       .filter(element => isReturnElementVisible(element)
         && normalizeReturnText(element.textContent).includes('refund to your original payment method'))
       .sort((a, b) => a.textContent.length - b.textContent.length)[0]
@@ -1666,13 +1676,41 @@
   }
 
   function findOriginalPaymentRadio() {
+    const directLabel = Array.from(document.querySelectorAll('label')).find(candidate =>
+      isReturnElementVisible(candidate)
+      && normalizeReturnText(candidate.textContent).includes('refund to your original payment method')
+    );
+    const directLabelRadio = directLabel?.querySelector('input[type="radio"]');
+    if (directLabelRadio) return directLabelRadio;
+    const directLabelFor = directLabel?.getAttribute('for');
+    const directLabelControl = directLabelFor ? document.getElementById(directLabelFor) : null;
+    if (directLabelControl?.matches?.('input[type="radio"]')) return directLabelControl;
+
     const textElement = findOriginalPaymentMethodText();
     if (!textElement) return null;
+
     const label = textElement.closest('label');
-    const section = textElement.closest('.a-row, .a-section') || textElement.parentElement;
+    const labelledControlId = label?.getAttribute('for');
+    const labelledControl = labelledControlId ? document.getElementById(labelledControlId) : null;
+    if (labelledControl?.matches?.('input[type="radio"]')) return labelledControl;
+
+    const offeringId = textElement.closest('[data-displayable-offering-id]')
+      ?.getAttribute('data-displayable-offering-id') || labelledControlId;
+    if (offeringId) {
+      const byOffering = Array.from(document.querySelectorAll('input[type="radio"]')).find(radio =>
+        radio.id === offeringId
+        || radio.closest('[data-displayable-offering-id]')?.getAttribute('data-displayable-offering-id') === offeringId
+      );
+      if (byOffering) return byOffering;
+    }
+
+    const refundRadios = Array.from(document.querySelectorAll(
+      '.resolution-offering-option-radio-button[data-resolution-type="Refund"] input[type="radio"], [data-resolution-type="Refund"] input[type="radio"]'
+    )).filter(isReturnElementVisible);
+    if (refundRadios.length === 1) return refundRadios[0];
+
     return label?.querySelector('input[type="radio"]')
-      || section?.querySelector('input[type="radio"]')
-      || textElement.previousElementSibling?.matches?.('input[type="radio"]') && textElement.previousElementSibling
+      || textElement.closest('.a-row')?.querySelector('input[type="radio"]')
       || null;
   }
 
@@ -1714,15 +1752,27 @@
   }
 
   async function runRefundMethodStep(state) {
-    const showAllOptions = await waitForReturnElement(findShowAllReturnOptionsButton, 5000);
-    if (showAllOptions) {
-      setReturnWorkflowStatus('Opening return options...');
-      showAllOptions.click();
-      await delay(400);
+    if (!findOriginalPaymentMethodText()) {
+      const showAllOptions = await waitForReturnElement(findShowAllReturnOptionsButton, 10000);
+      if (showAllOptions) {
+        setReturnWorkflowStatus('Opening return options...');
+        showAllOptions.click();
+        await waitForReturnElement(findOriginalPaymentMethodText, 15000);
+      }
     }
+
+    setReturnWorkflowStatus('Selecting original payment method...');
     await selectOriginalPaymentMethod();
-    const continueButton = await waitForReturnElement(() => findReturnContinueButton('refund-method'), 15000);
+
+    const continueButton = await waitForReturnElement(() => {
+      if (!findOriginalPaymentMethodText()) return null;
+      const radio = findOriginalPaymentRadio();
+      if (radio && !radio.checked) return null;
+      return findReturnContinueButton('refund-method');
+    }, 20000);
     if (!continueButton) throw new Error('refund-method Continue not ready');
+
+    setReturnWorkflowStatus('Continuing return...');
     saveReturnWorkflowState('shipping', state);
     continueButton.click();
     await delay(1200);
