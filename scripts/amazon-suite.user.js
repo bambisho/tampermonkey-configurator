@@ -55,44 +55,51 @@
   }, 0);
 
   // ========== UK RETURNS FLOW ==========
-  function initUKReturns() {
-    // Persistent re-arm loop: Amazon uses soft navigation (page content
-    // changes without a full reload), so a one-shot observer dies before
-    // the returns page appears. This loop runs forever (cheap DOM check
-    // every 1.5s) and re-attaches the button whenever a "Change address"
-    // link exists without our button next to it.
-    const attachIfNeeded = () => {
-      if (document.getElementById('ext-ie-address-btn')) return;
+  function attachIrelandAddressButtonIfNeeded() {
+    if (document.getElementById('ext-ie-address-btn')) return false;
 
-      let targetLink = null;
-      const allLinks = document.querySelectorAll('a[role="button"]');
-      for (const link of allLinks) {
-        if (link.textContent.trim() === 'Change address') { targetLink = link; break; }
-      }
-      if (!targetLink) return;
+    const targetLink = findIrelandChangeAddressControl();
+    if (!targetLink) return false;
 
-      const btn = createButton('ext-ie-address-btn', 'Add Ireland Address');
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        btn.textContent = 'Working...';
-        btn.style.background = '#f0a030';
-        startUKFlow().catch(error => {
-          console.warn('[AddressFiller] Ireland address flow failed:', error);
-          updateButton('ext-ie-address-btn', 'error', 'Retry Ireland Address');
-        });
+    const btn = createButton('ext-ie-address-btn', 'Add Ireland Address');
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      console.info('[AddressFiller] Ireland button clicked.');
+      btn.textContent = 'Working...';
+      btn.style.background = '#f0a030';
+      startUKFlow().catch(error => {
+        console.warn('[AddressFiller] Ireland address flow failed:', error);
+        updateButton('ext-ie-address-btn', 'error', 'Retry Ireland Address');
       });
+    });
 
-      targetLink.parentElement.appendChild(btn);
-      console.log('[AddressFiller] Ireland button attached.');
-    };
+    targetLink.parentElement.appendChild(btn);
+    console.log('[AddressFiller] Ireland button attached.');
+    return true;
+  }
 
-    attachIfNeeded();
-    setInterval(attachIfNeeded, 1500);
+  function initUKReturns() {
+    // Amazon uses soft navigation on returns pages, so keep a persistent
+    // observer that injects the button as soon as "Change address" appears.
+    attachIrelandAddressButtonIfNeeded();
+    const observer = new MutationObserver(() => attachIrelandAddressButtonIfNeeded());
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'disabled', 'aria-disabled', 'style'],
+    });
+    setInterval(attachIrelandAddressButtonIfNeeded, 4000);
   }
 
   let irelandAddressFlowPromise = null;
 
   function findIrelandChangeAddressControl() {
+    const returnAddressTrigger = document.querySelector(
+      'a.change-address-widget-trigger[role="button"][data-address-selection-url]'
+    );
+    if (isReturnControlEnabled(returnAddressTrigger)) return returnAddressTrigger;
+
     return Array.from(document.querySelectorAll('a[role="button"], button, [data-action="a-modal"]'))
       .find(element => isReturnControlEnabled(element)
         && normalizeReturnText(element.textContent) === 'change address') || null;
@@ -107,53 +114,121 @@
     return null;
   }
 
-  function waitForIrelandAddressState(findState, timeoutMs = 6000) {
-    const immediate = findState();
-    if (immediate) return Promise.resolve(immediate);
+  function waitForCondition(findFn, options = {}) {
+    const {
+      timeoutMs = 8000,
+      label = 'condition',
+      logPrefix = '[Wait]',
+      root = document.body,
+      pollIntervalMs = 100,
+      debounceMs = 16,
+      attributeFilter = ['class', 'disabled', 'aria-disabled', 'checked', 'value', 'style'],
+    } = options;
+    const startedAt = Date.now();
+
+    const check = () => {
+      try {
+        return findFn();
+      } catch (error) {
+        console.warn(`${logPrefix} ${label} check threw:`, error);
+        return null;
+      }
+    };
+
+    const immediate = check();
+    if (immediate) {
+      console.info(`${logPrefix} ${label} already ready.`, { elapsedMs: Date.now() - startedAt });
+      return Promise.resolve(immediate);
+    }
+
+    const hasTimeout = timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0;
+    console.info(`${logPrefix} Waiting for ${label}.`, hasTimeout ? { timeoutMs } : { timeoutMs: 'none' });
 
     return new Promise(resolve => {
       let settled = false;
+      let debounceTimer = null;
+      let pollTimer = null;
+      let timeout = null;
+
       const finish = value => {
         if (settled) return;
         settled = true;
         observer.disconnect();
-        clearTimeout(timeout);
-        resolve(value);
+        if (timeout != null) clearTimeout(timeout);
+        clearTimeout(debounceTimer);
+        clearInterval(pollTimer);
+        const elapsedMs = Date.now() - startedAt;
+        if (value) console.info(`${logPrefix} ${label} ready.`, { elapsedMs });
+        else console.warn(`${logPrefix} ${label} timed out.`, { timeoutMs, elapsedMs });
+        resolve(value ?? null);
       };
-      const observer = new MutationObserver(() => {
-        const value = findState();
+
+      const evaluate = () => {
+        const value = check();
         if (value) finish(value);
-      });
-      const timeout = setTimeout(() => finish(null), timeoutMs);
-      observer.observe(document.body, {
+      };
+
+      const scheduleEvaluate = () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(evaluate, debounceMs);
+      };
+
+      const observer = new MutationObserver(scheduleEvaluate);
+      observer.observe(root, {
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ['class', 'disabled', 'aria-disabled', 'style']
+        attributeFilter,
       });
+
+      pollTimer = setInterval(evaluate, pollIntervalMs);
+      if (hasTimeout) timeout = setTimeout(() => finish(null), timeoutMs);
+      evaluate();
     });
+  }
+
+  function waitForDom(findFn, label, logPrefix = '[Wait]') {
+    return waitForCondition(findFn, { timeoutMs: null, label, logPrefix });
+  }
+
+  function waitForIrelandAddressState(findState, timeoutMs = 6000, label = 'Ireland address state') {
+    return waitForCondition(findState, { timeoutMs, label, logPrefix: '[AddressFiller]' });
+  }
+
+  function waitForPopoverItems(timeoutMs = 3000) {
+    return waitForCondition(
+      () => {
+        const items = document.querySelectorAll('.a-popover-inner li, .a-popover li');
+        return items.length ? items : null;
+      },
+      { timeoutMs, label: 'dropdown popover items', logPrefix: '[AddressFiller]' }
+    );
   }
 
   async function runUKAddressFlow() {
     let entry = findIrelandAddressEntry();
+    console.info('[AddressFiller] Initial Ireland address state.', { state: entry?.type || 'none' });
     if (!entry) {
       const changeAddr = findIrelandChangeAddressControl();
       if (!changeAddr) throw new Error('Change address control not found');
       updateButton('ext-ie-address-btn', 'working', 'Opening address options...');
+      console.info('[AddressFiller] Clicking Change address.');
       changeAddr.click();
-      entry = await waitForIrelandAddressState(findIrelandAddressEntry);
+      entry = await waitForIrelandAddressState(findIrelandAddressEntry, 6000, 'address options');
     }
 
     if (entry?.type === 'add-link') {
       updateButton('ext-ie-address-btn', 'working', 'Opening address form...');
+      console.info('[AddressFiller] Clicking Add new address.');
       entry.element.click();
       entry = await waitForIrelandAddressState(() => {
         const form = document.getElementById('address-ui-widgets-enterAddressFormContainer');
         return isReturnElementVisible(form) ? { type: 'form', element: form } : null;
-      });
+      }, 6000, 'Ireland address form');
     }
 
     if (entry?.type !== 'form') throw new Error('Ireland address form did not open');
+    console.info('[AddressFiller] Ireland address form is ready.');
     await fillIrishAddress(randomItem(IE_ADDRESSES));
     return true;
   }
@@ -174,14 +249,14 @@
   }
 
   async function fillIrishAddress(addr) {
-    setCountry('IE', 'Ireland');
+    console.info('[AddressFiller] Selecting Ireland.');
+    await setCountry('IE', 'Ireland');
     const cityField = await waitForIrelandAddressState(() => {
       const candidate = document.getElementById('address-ui-widgets-enterAddressCity');
       return isReturnElementVisible(candidate) ? candidate : null;
-    }, 6000);
+    }, 6000, 'Ireland city field');
     if (!cityField) throw new Error('Ireland address form fields not ready');
 
-    await delay(500);
     clearAndSet('address-ui-widgets-enterAddressFullName', addr.name);
     clearAndSet('address-ui-widgets-enterAddressPhoneNumber', normalizeIrishPhone(addr.phone));
     clearAndSet('address-ui-widgets-enterAddressLine1', addr.line1);
@@ -189,20 +264,28 @@
     clearAndSet('address-ui-widgets-enterAddressPostalCode', addr.postcode);
     clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
 
-    await delay(500);
-    handleIrishCounty(addr.county);
-    await delay(600);
+    await handleIrishCounty(addr.county);
 
     const cityCheck = document.getElementById('address-ui-widgets-enterAddressCity');
     if (cityCheck && !cityCheck.value) clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
 
-    await delay(400);
-    if (!clickAddressSubmit()) throw new Error('Ireland address submit control not ready');
+    const submitReady = await waitForCondition(
+      () => {
+        const submitBtn = document.getElementById('add-address-button-id-announce');
+        if (isReturnControlEnabled(submitBtn)) return submitBtn;
+        const submitSpan = document.getElementById('address-ui-widgets-form-submit-button');
+        const control = submitSpan?.querySelector('input[type="submit"], button') || submitSpan;
+        return isReturnControlEnabled(control) ? control : null;
+      },
+      { timeoutMs: 5000, label: 'Ireland address submit control', logPrefix: '[AddressFiller]' }
+    );
+    if (!submitReady || !clickAddressSubmit()) throw new Error('Ireland address submit control not ready');
+    console.info('[AddressFiller] Ireland address submit clicked.');
     updateButton('ext-ie-address-btn', 'done', 'Address Added!');
     return true;
   }
 
-  function handleIrishCounty(county) {
+  async function handleIrishCounty(county) {
     if (!county) return;
     const countyDropdown = document.getElementById('address-ui-widgets-enterAddressStateOrRegion-dropdown-nativeId');
     if (countyDropdown) {
@@ -211,25 +294,23 @@
         if (opt.textContent.trim().toLowerCase() === county.toLowerCase()) {
           countyDropdown.value = opt.value;
           countyDropdown.dispatchEvent(new Event('change', { bubbles: true }));
-          // Click through custom dropdown UI
           const customBtn = document.querySelector('[id*="enterAddressStateOrRegion"] .a-button-text');
           if (customBtn) {
             customBtn.click();
-            setTimeout(() => {
-              const items = document.querySelectorAll('.a-popover-inner li, .a-popover li');
+            const items = await waitForPopoverItems();
+            if (items) {
               for (const item of items) {
                 if (item.textContent.trim().toLowerCase() === county.toLowerCase()) {
                   item.click();
                   break;
                 }
               }
-            }, 300);
+            }
           }
           return;
         }
       }
     }
-    // Fallback: text input
     clearAndSet('address-ui-widgets-enterAddressDistrictOrCounty', county);
   }
 
@@ -290,18 +371,35 @@
     button.disabled = true;
   }
 
-  function waitForAddressForm(callback) {
-    setTimeout(() => {
-      observeFor(() => {
-        const city = document.getElementById('address-ui-widgets-enterAddressCity');
-        return city && city.offsetParent !== null ? city : null;
-      }, () => setTimeout(callback, 500), 10000);
-    }, 1800);
+  async function waitForAddressForm() {
+    const city = await waitForCondition(
+      () => {
+        const field = document.getElementById('address-ui-widgets-enterAddressCity');
+        return field && field.offsetParent !== null ? field : null;
+      },
+      { timeoutMs: 10000, label: 'address form city field', logPrefix: '[AddressFiller]' }
+    );
+    if (!city) throw new Error('address form did not appear');
+    return city;
   }
 
-  function fillGermanAddress(addr) {
-    setCountry('DE', 'Germany');
-    waitForAddressForm(() => {
+  async function waitForAddressSubmitControl() {
+    return waitForCondition(
+      () => {
+        const submitBtn = document.getElementById('add-address-button-id-announce');
+        if (isReturnControlEnabled(submitBtn)) return submitBtn;
+        const submitSpan = document.getElementById('address-ui-widgets-form-submit-button');
+        const control = submitSpan?.querySelector('input[type="submit"], button') || submitSpan;
+        return isReturnControlEnabled(control) ? control : null;
+      },
+      { timeoutMs: 5000, label: 'address submit control', logPrefix: '[AddressFiller]' }
+    );
+  }
+
+  async function fillGermanAddress(addr) {
+    try {
+      await setCountry('DE', 'Germany');
+      await waitForAddressForm();
       clearAndSet('address-ui-widgets-enterAddressFullName', addr.name);
       clearAndSet('address-ui-widgets-enterAddressCompanyName', addr.company || '');
       clearAndSet('address-ui-widgets-enterAddressPhoneNumber', addr.phone);
@@ -315,16 +413,20 @@
       clearAndSet('address-ui-widgets-enterAddressPostalCode', addr.plz);
       clearAndSet('address-ui-widgets-enterAddressCity', addr.city);
 
-      setTimeout(() => {
+      if (await waitForAddressSubmitControl()) {
         clickAddressSubmit();
         updateButton('ext-de-address-btn', 'done', 'Address Added!');
-      }, 600);
-    });
+      }
+    } catch (error) {
+      console.warn('[AddressFiller] German address fill failed:', error);
+      updateButton('ext-de-address-btn', 'error', 'Retry German Address');
+    }
   }
 
-  function fillUKAddress(addr) {
-    setCountry('GB', 'United Kingdom');
-    waitForAddressForm(() => {
+  async function fillUKAddress(addr) {
+    try {
+      await setCountry('GB', 'United Kingdom');
+      await waitForAddressForm();
       clearAndSet('address-ui-widgets-enterAddressFullName', addr.name);
       clearAndSet('address-ui-widgets-enterAddressCompanyName', addr.company || '');
       clearAndSet('address-ui-widgets-enterAddressPhoneNumber', addr.phone);
@@ -334,11 +436,14 @@
       clearAndSet('address-ui-widgets-enterAddressStateOrRegion', addr.county || '');
       clearAndSet('address-ui-widgets-enterAddressPostalCode', addr.postcode);
 
-      setTimeout(() => {
+      if (await waitForAddressSubmitControl()) {
         clickAddressSubmit();
         updateButton('ext-uk-address-btn', 'done', 'Address Added!');
-      }, 600);
-    });
+      }
+    } catch (error) {
+      console.warn('[AddressFiller] UK address fill failed:', error);
+      updateButton('ext-uk-address-btn', 'error', 'Retry UK Address');
+    }
   }
 
   // ========== ORDERS PAGE RETURN LAUNCHERS ==========
@@ -1274,6 +1379,17 @@
     ]
   ];
 
+  const RETURN_WORKFLOW_MAX_RETRIES = 12;
+  const RETURN_WORKFLOW_BASE_BACKOFF_MS = 300;
+  const RETURN_WORKFLOW_MAX_BACKOFF_MS = 5000;
+
+  function getReturnWorkflowRetryDelay(retryCount) {
+    return Math.min(
+      RETURN_WORKFLOW_BASE_BACKOFF_MS * 2 ** Math.min(retryCount, 5),
+      RETURN_WORKFLOW_MAX_BACKOFF_MS
+    );
+  }
+
   function initReturnsAutoFill() {
     if (!window.location.pathname.includes('/returns/')) return;
 
@@ -1294,7 +1410,13 @@
       try {
         await resumeReturnWorkflow();
       } catch (error) {
-        recordReturnWorkflowRetry(error, visibleStage);
+        const retryCount = recordReturnWorkflowRetry(error, visibleStage);
+        if (retryCount >= RETURN_WORKFLOW_MAX_RETRIES) {
+          setReturnWorkflowStatus('Failed: ' + (error?.message || 'page not ready'), 'error');
+          clearReturnWorkflowState();
+          return;
+        }
+        setTimeout(schedule, getReturnWorkflowRetryDelay(retryCount));
       } finally {
         busy = false;
       }
@@ -1309,13 +1431,18 @@
     const observer = new MutationObserver(schedule);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'disabled', 'aria-disabled', 'checked', 'value'] });
     tick();
-    setInterval(schedule, 800);
+    setInterval(schedule, 4000);
   }
 
   function recordReturnWorkflowRetry(error, visibleStage = null) {
     const state = readReturnWorkflowState();
     const retryCount = (state?.retryCount || 0) + 1;
-    console.warn('[ReturnWorkflow] Waiting to retry:', error);
+    console.warn('[ReturnWorkflow] Waiting to retry:', {
+      stage: state?.stage || visibleStage || 'unknown',
+      retryCount,
+      message: error?.message || String(error),
+      continueControls: getReturnContinueControlSnapshot()
+    });
     if (state) {
       saveReturnWorkflowState(state.stage || visibleStage || 'reason', {
         ...state,
@@ -1344,6 +1471,19 @@
     return String(value || '').replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim().toLowerCase();
   }
 
+  function getReturnContinueControlSnapshot() {
+    return Array.from(document.querySelectorAll('input[type="submit"], button, a[role="button"]'))
+      .filter(element => normalizeReturnText(`${element.value || ''} ${element.textContent || ''}`).includes('continue'))
+      .map(element => ({
+        eventType: element.getAttribute('data-event-type') || null,
+        id: element.id || null,
+        visible: isReturnElementVisible(element),
+        disabled: Boolean(element.disabled) || element.getAttribute('aria-disabled') === 'true'
+          || Boolean(element.closest('.a-button-disabled, [aria-disabled="true"]')),
+        wrapperClass: element.closest('.a-button')?.className || null
+      }));
+  }
+
   function randomItem(items) {
     return items[Math.floor(Math.random() * items.length)];
   }
@@ -1352,14 +1492,57 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  async function waitForReturnElement(findFn, timeoutMs = 8000, intervalMs = 150) {
-    const maxChecks = Math.max(1, Math.ceil(timeoutMs / intervalMs));
-    for (let check = 0; check < maxChecks; check++) {
-      const result = findFn();
-      if (result) return result;
-      await delay(intervalMs);
+  function waitForReturnElement(findFn, timeoutMs = 8000, label = 'element') {
+    return waitForCondition(findFn, {
+      timeoutMs,
+      label,
+      logPrefix: '[ReturnWorkflow]',
+    });
+  }
+
+  function applyReturnReasonDescription(reasonKey, description) {
+    const heading = findReturnHeading('reason for return');
+    const scope = heading?.closest('form, .a-section, [id*="returns"]') || document;
+    const textarea = findReasonTextarea(reasonKey, false)
+      || Array.from(scope.querySelectorAll('textarea')).find(isReturnElementVisible)
+      || null;
+    if (!textarea) return null;
+    if (textarea.value !== description) {
+      setNativeReturnValue(textarea, description);
+      textarea.dispatchEvent(new Event('keyup', { bubbles: true }));
+      textarea.dispatchEvent(new Event('blur', { bubbles: true }));
     }
-    return null;
+    return textarea;
+  }
+
+  async function waitForReturnStageAdvance(fromStage) {
+    const advanceChecks = {
+      quantity: () => {
+        const reasonReady = findReasonSelect() || findReturnHeading('reason for return');
+        if (!reasonReady) return null;
+        if (findReturnQuantityHeading() && findReturnContinueButton('quantity')) return null;
+        return reasonReady;
+      },
+      reason: () => findReturnHeading('condition of the item')
+        || findShowAllReturnOptionsButton()
+        || findOriginalPaymentMethodText()
+        || findReturnHeading('how can we make it right'),
+      // The support heading appears before Amazon renders the yellow action.
+      condition: () => findShowAllReturnOptionsButton() || findOriginalPaymentMethodText(),
+      'refund-method': () => isReturnCollectionAddressPage() || isReturnStopPage()
+        || findReturnHeading('confirm your return'),
+    };
+    const check = advanceChecks[fromStage];
+    if (!check) {
+      await delay(600);
+      return;
+    }
+    const advanced = await waitForCondition(check, {
+      timeoutMs: 15000,
+      label: `stage advance from ${fromStage}`,
+      logPrefix: '[ReturnWorkflow]',
+    });
+    if (!advanced) throw new Error(`page did not advance from ${fromStage}`);
   }
 
   function setNativeReturnValue(element, value) {
@@ -1472,7 +1655,7 @@
   }
 
   async function selectMaximumReturnQuantity() {
-    const control = await waitForReturnElement(findReturnQuantityControl, 8000);
+    const control = await waitForReturnElement(findReturnQuantityControl, 8000, 'quantity control');
     if (!control) throw new Error('return quantity control not found');
 
     if (control.type === 'aui-select') {
@@ -1481,12 +1664,12 @@
       const visibleOption = await waitForReturnElement(() =>
         Array.from(document.querySelectorAll('[role="option"]')).find(option =>
           isReturnElementVisible(option) && parseReturnQuantity(option.textContent) === selected.quantity
-        ), 5000);
+        ), 5000, 'quantity dropdown option');
       if (visibleOption) visibleOption.click();
       else setNativeReturnValue(control.element, selected.option.value);
       const applied = await waitForReturnElement(() =>
         parseReturnQuantity(control.element.value) === selected.quantity ? control.element : null
-      , 5000);
+      , 5000, 'quantity value applied');
       if (!applied) throw new Error('maximum quantity was not applied');
       return selected.quantity;
     }
@@ -1528,13 +1711,19 @@
   function findReturnContinueButton(stage = '') {
     const eventTypes = {
       quantity: 'quantitySelectionContinueClicked',
-      reason: 'returnReasonContinueClicked',
+      // Amazon uses either control while a reason is being applied. The
+      // reason-specific control starts hidden; the item-selection control
+      // becomes the active one on some return pages.
+      reason: ['returnReasonContinueClicked', 'itemSelectionContinueClicked'],
       condition: 'productConditionContinueClicked'
     };
-    const eventType = eventTypes[stage];
-    if (eventType) {
+    const eventTypesForStage = Array.isArray(eventTypes[stage]) ? eventTypes[stage] : [eventTypes[stage]];
+    for (const eventType of eventTypesForStage) {
+      if (!eventType) continue;
       const stageControl = document.querySelector(`[data-event-type="${eventType}"]`);
-      if (isReturnControlEnabled(stageControl)) return stageControl;
+      if (stageControl && isReturnAuiButtonEnabled(stageControl)) {
+        return getReturnAuiClickTarget(stageControl);
+      }
     }
     if (stage === 'refund-method') {
       const resolutionControls = [
@@ -1542,16 +1731,16 @@
         ...document.querySelectorAll('input[type="submit"][data-form-id="resolutionSectionForm"]'),
         ...document.querySelectorAll('[data-event-type="resolutionCenterContinueButtonClicked"]')
       ];
-      const resolutionControl = resolutionControls.find(isReturnControlEnabled);
-      if (resolutionControl) return resolutionControl;
+      const resolutionControl = resolutionControls.find(isReturnAuiButtonEnabled);
+      if (resolutionControl) return getReturnAuiClickTarget(resolutionControl);
     }
 
     const direct = Array.from(document.querySelectorAll('input[name="continue"], button[name="continue"]'))
-      .find(isReturnControlEnabled);
-    if (direct) return direct;
+      .find(isReturnAuiButtonEnabled);
+    if (direct) return getReturnAuiClickTarget(direct);
 
-    return Array.from(document.querySelectorAll('button, input[type="submit"], a[role="button"]')).find(element => {
-      if (!isReturnControlEnabled(element)) return false;
+    return Array.from(document.querySelectorAll('.a-button, button, input[type="submit"], a[role="button"]')).find(element => {
+      if (!isReturnAuiButtonEnabled(element)) return false;
       const ownText = normalizeReturnText(element.value || element.textContent || '');
       const wrapperText = normalizeReturnText(element.closest('.a-button')?.textContent || '');
       return ownText === 'continue' || wrapperText === 'continue';
@@ -1589,16 +1778,93 @@
   async function runQuantityStep(state) {
     const quantity = await selectMaximumReturnQuantity();
     setReturnWorkflowStatus(`Quantity ${quantity} selected...`);
-    await delay(250);
-    const continueButton = await waitForReturnElement(() => findReturnContinueButton('quantity'), 15000);
+    const continueButton = await waitForReturnElement(
+      () => findReturnContinueButton('quantity'),
+      15000,
+      'quantity Continue'
+    );
     if (!continueButton) throw new Error('quantity page Continue not ready');
     saveReturnWorkflowState('reason', { ...state, returnQuantity: quantity });
     continueButton.click();
-    await delay(1200);
+    await waitForReturnStageAdvance('quantity');
   }
 
-  async function runReasonStep() {
-    const select = await waitForReturnElement(findReasonSelect);
+  function findReasonDropdownTrigger(select) {
+    if (!select?.id) {
+      return select?.parentElement?.querySelector('[data-action="a-dropdown-button"]') || null;
+    }
+    return document.querySelector(`[data-dropdown-native-id="${select.id}"] [data-action="a-dropdown-button"]`)
+      || select.parentElement?.querySelector('[data-action="a-dropdown-button"]')
+      || select.closest('.a-button, .a-dropdown')?.querySelector('[data-action="a-dropdown-button"]')
+      || null;
+  }
+
+  function findReasonDropdownOption(reasonKey, optionText) {
+    const wantedText = normalizeReturnText(optionText);
+    return Array.from(document.querySelectorAll(
+      '.a-popover:not(.aok-hidden) .a-dropdown-link, .a-popover:not(.aok-hidden) [role="option"], .a-popover-inner li, [role="listbox"] [role="option"]'
+    )).find(item => {
+      if (!isReturnElementVisible(item)) return false;
+      const value = item.getAttribute('data-value')
+        || item.querySelector('[data-value]')?.getAttribute('data-value')
+        || '';
+      const id = item.id || item.querySelector('a')?.id || '';
+      return value === reasonKey
+        || id.endsWith(`_${reasonKey}`)
+        || id.includes(reasonKey)
+        || normalizeReturnText(item.textContent) === wantedText;
+    }) || null;
+  }
+
+  function clickReturnControl(element) {
+    if (!element) return false;
+    try {
+      element.click();
+      return true;
+    } catch (error) {
+      console.warn('[ReturnWorkflow] Click failed:', error);
+      return false;
+    }
+  }
+
+  async function selectReturnReason(select, reasonKey) {
+    const option = Array.from(select.options || []).find(item => item.value === reasonKey);
+    if (!option) return false;
+    if (select.value === reasonKey && findReturnContinueButton('reason')) return true;
+
+    try {
+      const trigger = findReasonDropdownTrigger(select);
+      if (trigger) {
+        clickReturnControl(trigger);
+        const visibleOption = await waitForReturnElement(
+          () => findReasonDropdownOption(reasonKey, option.textContent),
+          4000,
+          'reason dropdown option'
+        );
+        if (visibleOption) {
+          clickReturnControl(visibleOption);
+          const applied = await waitForReturnElement(
+            () => select.value === reasonKey ? select : null,
+            3000,
+            'reason value applied'
+          );
+          if (applied) return true;
+        }
+      }
+    } catch (error) {
+      console.warn('[ReturnWorkflow] Reason dropdown interaction failed:', error);
+    }
+
+    try {
+      setNativeReturnValue(select, reasonKey);
+    } catch (error) {
+      console.warn('[ReturnWorkflow] Native reason select failed:', error);
+    }
+    return select.value === reasonKey;
+  }
+
+  async function runReasonStep(state = {}) {
+    const select = await waitForReturnElement(findReasonSelect, 8000, 'reason dropdown');
     if (!select) throw new Error('return reason dropdown not found');
 
     const availableKeys = RETURN_REASON_KEYS.filter(reasonKey =>
@@ -1606,25 +1872,73 @@
     );
     if (!availableKeys.length) throw new Error('marked return reasons unavailable');
 
-    const reasonKey = randomItem(availableKeys);
-    const description = randomItem(RETURN_REASON_LIBRARY[reasonKey]);
-    saveReturnWorkflowState('reason', { reasonKey, description });
-    setNativeReturnValue(select, reasonKey);
-    setReturnWorkflowStatus('Reason selected...');
+    const tried = [...(state.triedReasonKeys || [])];
+    let candidates = availableKeys.filter(reasonKey => !tried.includes(reasonKey));
+    if (!candidates.length) candidates = availableKeys.slice();
 
-    const continueButton = await waitForReturnElement(() => {
-      const textarea = findReasonTextarea(reasonKey, false);
-      if (textarea && textarea.value !== description) {
-        setNativeReturnValue(textarea, description);
-        textarea.dispatchEvent(new Event('keyup', { bubbles: true }));
-        textarea.dispatchEvent(new Event('blur', { bubbles: true }));
+    while (candidates.length) {
+      const reasonKey = randomItem(candidates);
+      candidates = candidates.filter(key => key !== reasonKey);
+      tried.push(reasonKey);
+      const description = (state.reasonKey === reasonKey && state.description)
+        || randomItem(RETURN_REASON_LIBRARY[reasonKey]);
+      saveReturnWorkflowState('reason', { ...state, reasonKey, description, triedReasonKeys: tried });
+      console.info('[ReturnWorkflow] Applying reason selection:', {
+        selectId: select.id || null,
+        reasonKey
+      });
+      try {
+        const selected = await selectReturnReason(select, reasonKey);
+        if (!selected) {
+          console.warn('[ReturnWorkflow] Could not apply reason via dropdown.', { reasonKey });
+          continue;
+        }
+      } catch (error) {
+        console.warn('[ReturnWorkflow] Reason dropdown click failed:', error);
+        continue;
       }
-      return findReturnContinueButton('reason');
-    }, 20000);
-    if (!continueButton) throw new Error('reason page Continue not ready');
-    saveReturnWorkflowState('condition', { reasonKey, description });
-    continueButton.click();
-    await delay(1200);
+      setReturnWorkflowStatus('Reason selected...');
+      await waitForReturnElement(
+        () => applyReturnReasonDescription(reasonKey, description),
+        4000,
+        'reason comment field'
+      );
+
+      const continueButton = await waitForReturnElement(() => {
+        applyReturnReasonDescription(reasonKey, description);
+        if (findShowAllReturnOptionsButton()
+          || findOriginalPaymentMethodText()
+          || findReturnHeading('condition of the item')
+          || findReturnHeading('how can we make it right')) {
+          return { alreadyAdvanced: true };
+        }
+        return findReturnContinueButton('reason');
+      }, 8000, 'reason Continue');
+      if (continueButton?.alreadyAdvanced) {
+        const nextStage = findShowAllReturnOptionsButton()
+          || findOriginalPaymentMethodText()
+          || findReturnHeading('how can we make it right')
+          ? 'refund-method'
+          : 'condition';
+        saveReturnWorkflowState(nextStage, { reasonKey, description, triedReasonKeys: tried });
+        return;
+      }
+      if (!continueButton) {
+        console.warn('[ReturnWorkflow] Reason did not enable Continue, trying another.', { reasonKey });
+        continue;
+      }
+
+      console.info('[ReturnWorkflow] Reason Continue is enabled:', {
+        eventType: continueButton.getAttribute('data-event-type') || null,
+        id: continueButton.id || null
+      });
+      saveReturnWorkflowState('condition', { reasonKey, description, triedReasonKeys: tried });
+      continueButton.click();
+      await waitForReturnStageAdvance('reason');
+      return;
+    }
+
+    throw new Error('reason page Continue not ready');
   }
 
   function detectReturnWorkflowStage() {
@@ -1640,12 +1954,22 @@
   async function resumeReturnWorkflow() {
     const state = readReturnWorkflowState();
     if (!state) return;
-    if (window.__extReturnContractControllerActive && isReturnContractPage()) return;
+    console.info('[ReturnWorkflow] Resuming state:', {
+      stage: state.stage,
+      path: window.location.pathname
+    });
 
     if (isReturnCollectionAddressPage()) {
       await runIrelandAddressHandoff(state);
       return;
     }
+
+    if (state.stage === 'shipping' || state.stage === 'ireland-address') {
+      await runIrelandAddressHandoff(state);
+      return;
+    }
+
+    if (window.__extReturnContractControllerActive && isReturnContractPage()) return;
 
     if (isReturnStopPage()) {
       console.log('[ReturnWorkflow] Stopped before final confirmation.');
@@ -1658,16 +1982,23 @@
       return;
     }
 
-    // This action is the canonical support-interstitial transition. Handle it
-    // before any generic Continue search so Amazon cannot advance the wrong panel.
-    if (findShowAllReturnOptionsButton()) {
+    // Wait for the yellow action or payment options — the heading alone
+    // appears earlier and used to stall here for 30s.
+    if (findShowAllReturnOptionsButton() || findOriginalPaymentMethodText()) {
       await runRefundMethodStep(state);
       return;
     }
 
     if (findReturnHeading('how can we make it right')) {
-      await runRefundMethodStep(state);
-      return;
+      const showAll = await waitForReturnElement(
+        findShowAllReturnOptionsButton,
+        8000,
+        'Continue to return options'
+      );
+      if (showAll || findOriginalPaymentMethodText()) {
+        await runRefundMethodStep(state);
+        return;
+      }
     }
 
     if (findReturnHeading('condition of the item')) {
@@ -1676,7 +2007,7 @@
     }
 
     if (findReasonSelect()) {
-      await runReasonStep();
+      await runReasonStep(state);
     }
   }
 
@@ -1701,11 +2032,15 @@
     }
 
     if (clicked < 4) throw new Error('condition questions not ready');
-    const continueButton = await waitForReturnElement(() => findReturnContinueButton('condition'), 15000);
+    const continueButton = await waitForReturnElement(
+      () => findReturnContinueButton('condition'),
+      15000,
+      'condition Continue'
+    );
     if (!continueButton) throw new Error('condition page Continue not ready');
     saveReturnWorkflowState('refund-method', state);
     continueButton.click();
-    await delay(1200);
+    await waitForReturnStageAdvance('condition');
   }
 
   function findOriginalPaymentMethodText() {
@@ -1715,7 +2050,10 @@
       return preferred;
     }
 
-    return Array.from(document.querySelectorAll('label, span, div, strong, p, [role="heading"]'))
+    const scoped = document.querySelectorAll(
+      '#resolutions-section label, #resolutions-section span, [data-resolution-type="Refund"] label, [data-resolution-type="Refund"] span, [id*="OriginalPurchaser"], [id*="resolution"] label, [id*="resolution"] span, label'
+    );
+    return Array.from(scoped)
       .filter(element => isReturnElementVisible(element)
         && normalizeReturnText(element.textContent).includes('refund to your original payment method'))
       .sort((a, b) => a.textContent.length - b.textContent.length)[0]
@@ -1761,16 +2099,44 @@
       || null;
   }
 
+  function isReturnAuiButtonEnabled(element) {
+    if (!element) return false;
+    const button = element.closest('.a-button') || element;
+    if (button.classList?.contains('a-button-disabled')) return false;
+    if (button.getAttribute('aria-disabled') === 'true') return false;
+    const native = button.querySelector?.('input, button')
+      || (element.matches?.('input, button') ? element : null);
+    if (native?.disabled) return false;
+    const style = window.getComputedStyle ? window.getComputedStyle(button) : null;
+    if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+    if (button.closest('[hidden], .aok-hidden')) return false;
+    return true;
+  }
+
+  function getReturnAuiClickTarget(element) {
+    if (!element) return null;
+    const button = element.closest?.('.a-button') || element;
+    return button.querySelector?.('.a-button-input, input[type="submit"], button, a') || button;
+  }
+
   function findShowAllReturnOptionsButton() {
-    const candidates = [
-      ...document.querySelectorAll('[data-event-type="showAllReturnOptions"]'),
-      ...document.querySelectorAll('button, input[type="submit"], a[role="button"], [role="button"]')
-    ];
-    return candidates.find(element => {
-      if (!isReturnControlEnabled(element)) return false;
-      const text = normalizeReturnText(`${element.value || ''} ${element.textContent || ''} ${element.closest('.a-button')?.textContent || ''}`);
-      return text.includes('continue to return options');
-    }) || null;
+    const byEvent = document.querySelectorAll('[data-event-type="showAllReturnOptions"]');
+    for (const node of byEvent) {
+      if (isReturnAuiButtonEnabled(node)) return getReturnAuiClickTarget(node);
+    }
+
+    const nodes = document.querySelectorAll(
+      '.a-button, .a-button-text, button, input[type="submit"], a[role="button"], [role="button"]'
+    );
+    for (const node of nodes) {
+      const text = normalizeReturnText(
+        `${node.value || ''} ${node.textContent || ''} ${node.closest('.a-button')?.textContent || ''}`
+      );
+      if (!text.includes('continue to return options')) continue;
+      if (!isReturnAuiButtonEnabled(node)) continue;
+      return getReturnAuiClickTarget(node);
+    }
+    return null;
   }
 
   function isReturnSupportInterstitial() {
@@ -1783,8 +2149,12 @@
   // Amazon renders the support panel before it adds the yellow action at
   // the bottom of the page. Do not advance the return flow until that
   // visible, enabled action is actually available.
-  async function waitForReturnOptionsButton(timeoutMs = 30000) {
-    const button = await waitForReturnElement(findShowAllReturnOptionsButton, timeoutMs);
+  async function waitForReturnOptionsButton(timeoutMs = 15000) {
+    const button = await waitForReturnElement(
+      findShowAllReturnOptionsButton,
+      timeoutMs,
+      'Continue to return options'
+    );
     if (!button) throw new Error('Continue to return options button not rendered');
     return button;
   }
@@ -1878,42 +2248,52 @@
     }
 
     if (!radio.checked) radio.click();
-    const selected = await waitForReturnElement(() => radio.checked ? radio : null, 4000);
+    const selected = await waitForReturnElement(
+      () => radio.checked ? radio : null,
+      4000,
+      'original payment selected'
+    );
     if (!selected) throw new Error('original payment method was not selected');
     return radio;
   }
 
   async function runRefundMethodStep(state) {
-    if (!findOriginalPaymentMethodText()) {
-      if (!isReturnSupportInterstitial()) {
-        throw new Error('return resolution state not ready');
-      }
-      setReturnWorkflowStatus('Waiting for return options...');
-      const showAllOptions = await waitForReturnOptionsButton();
+    const showAllOptions = findShowAllReturnOptionsButton();
+    if (showAllOptions) {
       setReturnWorkflowStatus('Opening return options...');
       showAllOptions.click();
-      const paymentMethod = await waitForReturnElement(findOriginalPaymentMethodText, 15000);
+      const paymentMethod = await waitForReturnElement(
+        findOriginalPaymentMethodText,
+        15000,
+        'original payment method'
+      );
       if (!paymentMethod) throw new Error('original payment method did not render');
+    } else if (!findOriginalPaymentMethodText()) {
+      throw new Error('return resolution state not ready');
     }
 
     setReturnWorkflowStatus('Selecting original payment method...');
     await selectOriginalPaymentMethod();
 
     const continueButton = await waitForReturnElement(() => {
+      if (isReturnCollectionAddressPage()) return { alreadyAdvanced: true };
       if (!findOriginalPaymentMethodText()) return null;
       const radio = findOriginalPaymentRadio();
       if (radio && !radio.checked) return null;
       return findReturnContinueButton('refund-method');
-    }, 20000);
+    }, 20000, 'refund-method Continue');
+    if (continueButton?.alreadyAdvanced) return;
     if (!continueButton) throw new Error('refund-method Continue not ready');
 
     setReturnWorkflowStatus('Continuing return...');
     saveReturnWorkflowState('shipping', state);
     continueButton.click();
-    await delay(1200);
+    await waitForReturnStageAdvance('refund-method');
   }
 
   function isReturnCollectionAddressPage() {
+    if (findIrelandChangeAddressControl()) return true;
+    if (document.getElementById('ext-ie-address-btn')) return true;
     if (findReturnHeading('how would you like to return your items')) return true;
     return Array.from(document.querySelectorAll('h1, h2, h3, [role="heading"], label, strong'))
       .some(element => isReturnElementVisible(element)
@@ -1921,10 +2301,11 @@
   }
 
   async function runIrelandAddressHandoff(state) {
-    const button = await waitForReturnElement(() => {
+    const button = await waitForDom(() => {
+      attachIrelandAddressButtonIfNeeded();
       const candidate = document.getElementById('ext-ie-address-btn');
       return isReturnControlEnabled(candidate) ? candidate : null;
-    }, 12000);
+    }, 'Add Ireland Address button', '[ReturnWorkflow]');
     if (!button) throw new Error('Add Ireland Address button not ready');
 
     const attempt = (state?.irelandAddressAttempts || 0) + 1;
@@ -2269,7 +2650,7 @@
     el.blur();
   }
 
-  function setCountry(countryCode, countryText) {
+  async function setCountry(countryCode, countryText) {
     const nativeSelect = document.getElementById('address-ui-widgets-countryCode-dropdown-nativeId');
     if (!nativeSelect || nativeSelect.value === countryCode) return;
 
@@ -2277,25 +2658,25 @@
     nativeSelect.dispatchEvent(new Event('input', { bubbles: true }));
     nativeSelect.dispatchEvent(new Event('change', { bubbles: true }));
 
-    // Fallback for Amazon's custom dropdown. Prefer the locale-independent value.
     const dropdownButton = document.querySelector('[id*="countryCode"] .a-button-text, [id*="countryCode"] .a-dropdown-prompt');
     if (!dropdownButton) return;
     dropdownButton.click();
-    setTimeout(() => {
-      const items = Array.from(document.querySelectorAll('.a-popover-inner li, .a-popover li, [id*="countryCode"] li'));
-      const byValue = items.find(item =>
-        item.getAttribute('data-value') === countryCode
-        || item.querySelector(`[data-value="${countryCode}"]`)
-        || item.querySelector(`a[id$="_${countryCode}"]`)
-      );
-      const aliases = countryCode === 'DE'
-        ? ['germany', 'deutschland']
-        : countryCode === 'GB'
-          ? ['united kingdom', 'vereinigtes königreich', 'großbritannien']
-          : [String(countryText || countryCode).toLowerCase()];
-      const byText = items.find(item => aliases.some(alias => normalizeReturnText(item.textContent).includes(alias)));
-      (byValue || byText)?.click();
-    }, 300);
+
+    const items = await waitForPopoverItems();
+    if (!items) return;
+    const itemsArray = Array.from(items);
+    const byValue = itemsArray.find(item =>
+      item.getAttribute('data-value') === countryCode
+      || item.querySelector(`[data-value="${countryCode}"]`)
+      || item.querySelector(`a[id$="_${countryCode}"]`)
+    );
+    const aliases = countryCode === 'DE'
+      ? ['germany', 'deutschland']
+      : countryCode === 'GB'
+        ? ['united kingdom', 'vereinigtes königreich', 'großbritannien']
+        : [String(countryText || countryCode).toLowerCase()];
+    const byText = itemsArray.find(item => aliases.some(alias => normalizeReturnText(item.textContent).includes(alias)));
+    (byValue || byText)?.click();
   }
 
   function clickAddressSubmit() {
@@ -2338,27 +2719,13 @@
   }
 
   function observeFor(checkFn, callback, maxWait) {
-    maxWait = maxWait || 10000;
-    // Check immediately
-    const immediate = checkFn();
-    if (immediate) {
-      callback(immediate);
-      return;
-    }
-    // Use MutationObserver for better performance than polling
-    const start = Date.now();
-    const observer = new MutationObserver(() => {
-      const result = checkFn();
-      if (result) {
-        observer.disconnect();
-        callback(result);
-      } else if (Date.now() - start > maxWait) {
-        observer.disconnect();
-      }
+    waitForCondition(checkFn, {
+      timeoutMs: maxWait || 10000,
+      label: 'observeFor',
+      logPrefix: '[AddressFiller]',
+    }).then(result => {
+      if (result) callback(result);
     });
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
-    // Fallback timeout to disconnect if never found
-    setTimeout(() => { observer.disconnect(); }, maxWait);
   }
 
 
