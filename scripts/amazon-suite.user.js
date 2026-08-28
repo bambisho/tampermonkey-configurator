@@ -44,6 +44,7 @@
       initAddressAddPage();
       initOrderReturnLaunchers();
       initReturnLabelTrackingBanner();
+      initOrderNumberCopyControls();
     }
     if (isUK) {
       initUKReturns();
@@ -97,45 +98,69 @@
         && normalizeReturnText(element.textContent) === 'change address') || null;
   }
 
-  async function runUKFlowWithRetries() {
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      let form = document.getElementById('address-ui-widgets-enterAddressFormContainer');
-      if (isReturnElementVisible(form)) {
-        await fillIrishAddress(randomItem(IE_ADDRESSES));
-        return true;
-      }
+  function findIrelandAddressEntry() {
+    const form = document.getElementById('address-ui-widgets-enterAddressFormContainer');
+    if (isReturnElementVisible(form)) return { type: 'form', element: form };
 
-      let addLink = document.getElementById('add-new-address-link');
-      if (!isReturnControlEnabled(addLink)) {
-        const changeAddr = findIrelandChangeAddressControl();
-        if (changeAddr) changeAddr.click();
-        addLink = await waitForReturnElement(() => {
-          const candidate = document.getElementById('add-new-address-link');
-          return isReturnControlEnabled(candidate) ? candidate : null;
-        }, 6000);
-      }
+    const addLink = document.getElementById('add-new-address-link');
+    if (isReturnControlEnabled(addLink)) return { type: 'add-link', element: addLink };
+    return null;
+  }
 
-      if (addLink) addLink.click();
-      form = await waitForReturnElement(() => {
-        const candidate = document.getElementById('address-ui-widgets-enterAddressFormContainer');
-        return isReturnElementVisible(candidate) ? candidate : null;
-      }, 8000);
+  function waitForIrelandAddressState(findState, timeoutMs = 6000) {
+    const immediate = findState();
+    if (immediate) return Promise.resolve(immediate);
 
-      if (form) {
-        await fillIrishAddress(randomItem(IE_ADDRESSES));
-        return true;
-      }
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        observer.disconnect();
+        clearTimeout(timeout);
+        resolve(value);
+      };
+      const observer = new MutationObserver(() => {
+        const value = findState();
+        if (value) finish(value);
+      });
+      const timeout = setTimeout(() => finish(null), timeoutMs);
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'disabled', 'aria-disabled', 'style']
+      });
+    });
+  }
 
-      updateButton('ext-ie-address-btn', 'working', `Retrying address (${attempt}/5)...`);
-      await delay(700);
+  async function runUKAddressFlow() {
+    let entry = findIrelandAddressEntry();
+    if (!entry) {
+      const changeAddr = findIrelandChangeAddressControl();
+      if (!changeAddr) throw new Error('Change address control not found');
+      updateButton('ext-ie-address-btn', 'working', 'Opening address options...');
+      changeAddr.click();
+      entry = await waitForIrelandAddressState(findIrelandAddressEntry);
     }
 
-    throw new Error('Ireland address form did not open');
+    if (entry?.type === 'add-link') {
+      updateButton('ext-ie-address-btn', 'working', 'Opening address form...');
+      entry.element.click();
+      entry = await waitForIrelandAddressState(() => {
+        const form = document.getElementById('address-ui-widgets-enterAddressFormContainer');
+        return isReturnElementVisible(form) ? { type: 'form', element: form } : null;
+      });
+    }
+
+    if (entry?.type !== 'form') throw new Error('Ireland address form did not open');
+    await fillIrishAddress(randomItem(IE_ADDRESSES));
+    return true;
   }
 
   function startUKFlow() {
     if (irelandAddressFlowPromise) return irelandAddressFlowPromise;
-    irelandAddressFlowPromise = runUKFlowWithRetries()
+    irelandAddressFlowPromise = runUKAddressFlow()
       .finally(() => {
         setTimeout(() => { irelandAddressFlowPromise = null; }, 1000);
       });
@@ -150,12 +175,10 @@
 
   async function fillIrishAddress(addr) {
     setCountry('IE', 'Ireland');
-    await delay(4000);
-
-    const cityField = await waitForReturnElement(() => {
+    const cityField = await waitForIrelandAddressState(() => {
       const candidate = document.getElementById('address-ui-widgets-enterAddressCity');
       return isReturnElementVisible(candidate) ? candidate : null;
-    }, 12000);
+    }, 6000);
     if (!cityField) throw new Error('Ireland address form fields not ready');
 
     await delay(500);
@@ -1750,6 +1773,22 @@
     }) || null;
   }
 
+  function isReturnSupportInterstitial() {
+    if (!findReturnHeading('how can we make it right')) return false;
+    return Array.from(document.querySelectorAll('button, a, div, section, article, [role="heading"]'))
+      .some(element => isReturnElementVisible(element)
+        && normalizeReturnText(element.textContent).includes('get product support'));
+  }
+
+  // Amazon renders the support panel before it adds the yellow action at
+  // the bottom of the page. Do not advance the return flow until that
+  // visible, enabled action is actually available.
+  async function waitForReturnOptionsButton(timeoutMs = 30000) {
+    const button = await waitForReturnElement(findShowAllReturnOptionsButton, timeoutMs);
+    if (!button) throw new Error('Continue to return options button not rendered');
+    return button;
+  }
+
   function isReturnContractPage() {
     return window.location.pathname.includes('/spr/returns/contract/');
   }
@@ -1828,15 +1867,7 @@
   }
 
   async function selectOriginalPaymentMethod() {
-    let methodText = findOriginalPaymentMethodText();
-    if (!methodText) {
-      const showAllOptions = await waitForReturnElement(findShowAllReturnOptionsButton, 10000);
-      if (showAllOptions) {
-        showAllOptions.click();
-        await delay(500);
-      }
-      methodText = await waitForReturnElement(findOriginalPaymentMethodText, 15000);
-    }
+    const methodText = findOriginalPaymentMethodText();
     if (!methodText) throw new Error('original payment method not available');
 
     const radio = findOriginalPaymentRadio();
@@ -1854,12 +1885,15 @@
 
   async function runRefundMethodStep(state) {
     if (!findOriginalPaymentMethodText()) {
-      const showAllOptions = await waitForReturnElement(findShowAllReturnOptionsButton, 10000);
-      if (showAllOptions) {
-        setReturnWorkflowStatus('Opening return options...');
-        showAllOptions.click();
-        await waitForReturnElement(findOriginalPaymentMethodText, 15000);
+      if (!isReturnSupportInterstitial()) {
+        throw new Error('return resolution state not ready');
       }
+      setReturnWorkflowStatus('Waiting for return options...');
+      const showAllOptions = await waitForReturnOptionsButton();
+      setReturnWorkflowStatus('Opening return options...');
+      showAllOptions.click();
+      const paymentMethod = await waitForReturnElement(findOriginalPaymentMethodText, 15000);
+      if (!paymentMethod) throw new Error('original payment method did not render');
     }
 
     setReturnWorkflowStatus('Selecting original payment method...');
@@ -2999,7 +3033,6 @@ scenario_id,timer_work,timer_sleep,cursor_speed,google_item_search,google_custom
         setTimeout(() => clearInterval(interval), 15000);
     }
 
-        initOrderNumberCopyControls();
         })();
     }
 
