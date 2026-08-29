@@ -195,14 +195,13 @@
     return waitForCondition(findState, { timeoutMs, label, logPrefix: '[AddressFiller]' });
   }
 
-  function waitForPopoverItems(timeoutMs = 3000) {
-    return waitForCondition(
-      () => {
-        const items = document.querySelectorAll('.a-popover-inner li, .a-popover li');
-        return items.length ? items : null;
-      },
-      { timeoutMs, label: 'dropdown popover items', logPrefix: '[AddressFiller]' }
+  function dismissAddressPopups() {
+    const close = document.querySelector(
+      '.a-popover-modal .a-button-close, .a-popover-header .a-button-close, [data-action="a-popover-close"]'
     );
+    if (!close) return;
+    console.info('[AddressFiller] Dismissing address popup.');
+    close.click();
   }
 
   async function runUKAddressFlow() {
@@ -281,6 +280,7 @@
     );
     if (!submitReady || !clickAddressSubmit()) throw new Error('Ireland address submit control not ready');
     console.info('[AddressFiller] Ireland address submit clicked.');
+    dismissAddressPopups();
     updateButton('ext-ie-address-btn', 'done', 'Address Added!');
     return true;
   }
@@ -1160,9 +1160,13 @@
   // ========== ORDER NUMBER COPY CONTROL ==========
   const AMAZON_ORDER_NUMBER_PATTERN = /\b\d{3}-\d{7}-\d{7}\b/;
 
-  function initOrderNumberCopyControls() {
+  function isAmazonOrdersIndexPage() {
     const path = window.location.pathname;
-    if (!path.includes('/your-orders') && !path.includes('/your-orders-access') && !path.includes('/order-details')) return;
+    return /\/your-orders|\/your-orders-access|\/order-history|\/order-details/i.test(path);
+  }
+
+  function initOrderNumberCopyControls() {
+    if (!isAmazonOrdersIndexPage()) return;
     const scan = () => {
       if (!document.body) return;
       decorateOrderNumberTextNodes();
@@ -1201,6 +1205,7 @@
     }
 
     decorateSplitOrderNumberElements();
+    decorateBareOrderNumberElements();
   }
 
   function decorateSplitOrderNumberElements() {
@@ -1232,6 +1237,33 @@
       fragment.appendChild(document.createTextNode(source.slice(0, start)));
       fragment.appendChild(createOrderNumberCopyControl(orderNumber));
       fragment.appendChild(document.createTextNode(source.slice(start + orderNumber.length)));
+      textNode.replaceWith(fragment);
+    }
+  }
+
+  function decorateBareOrderNumberElements() {
+    const candidates = Array.from(document.querySelectorAll('a, span, b, strong, label, td, th, div')).filter(element => {
+      if (element.closest('.ext-copy-order-number, script, style, textarea, input')) return false;
+      if (element.querySelector('.ext-copy-order-number')) return false;
+      const text = (element.textContent || '').trim();
+      return AMAZON_ORDER_NUMBER_PATTERN.test(text)
+        && text.replace(/\s+/g, ' ').length <= 24;
+    });
+
+    for (const candidate of candidates) {
+      const textNode = Array.from(candidate.childNodes).find(node =>
+        node.nodeType === Node.TEXT_NODE && AMAZON_ORDER_NUMBER_PATTERN.test(node.nodeValue || '')
+      );
+      if (!textNode) continue;
+      const source = textNode.nodeValue || '';
+      const start = source.search(AMAZON_ORDER_NUMBER_PATTERN);
+      if (start < 0) continue;
+      const match = source.slice(start).match(AMAZON_ORDER_NUMBER_PATTERN);
+      if (!match) continue;
+      const fragment = document.createDocumentFragment();
+      fragment.appendChild(document.createTextNode(source.slice(0, start)));
+      fragment.appendChild(createOrderNumberCopyControl(match[0]));
+      fragment.appendChild(document.createTextNode(source.slice(start + match[0].length)));
       textNode.replaceWith(fragment);
     }
   }
@@ -2312,6 +2344,7 @@
     saveReturnWorkflowState('ireland-address', { ...state, irelandAddressAttempts: attempt });
     button.click();
     await startUKFlow();
+    dismissAddressPopups();
     clearReturnWorkflowState();
     console.log('[ReturnWorkflow] Ireland address form opened; final confirmation remains manual.');
   }
